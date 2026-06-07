@@ -21,6 +21,7 @@ deno_bin = "/root/.deno/bin/deno"
 primary_host = "vaie.art"
 www_redirect_host = "www.vaie.art"
 
+
 [[services]]
 name = "vaie.art"
 kind = "deno_app"
@@ -29,12 +30,14 @@ remote_path = "/srv/vaie.art"
 port = 3000
 sync_source = "build"
 entrypoint = "index.js"
+route_path = "/"
 
 [services.build]
 commands = [
     ["deno", "task", "convert-media"],
     ["deno", "task", "build"],
 ]
+
 
 [[services]]
 name = "pudle"
@@ -45,4 +48,22 @@ sync_source = "build"
 route_path = "/pudle"
 
 [services.build]
-command = ["deno", "task", "build"]
+commands = [
+    ["deno", "task", "build"],
+]
+
+
+[[services]]
+name = "hatchery-web"
+kind = "deno_app"
+local_path = "src/submodules/plover-hatchery/web"
+remote_path = "/srv/hatchery"
+port = 3001
+sync_source = "build"
+entrypoint = "index.js"
+route_path = "/hatchery"
+
+[services.build]
+commands = [
+    ["deno", "task", "build"],
+]

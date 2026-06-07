@@ -1,7 +1,11 @@
 # https://vaie.art/ service map & deployment
-Central location for managing, deploying, and updating separate services running on https://vaie.art/
+Central location for managing, deploying, and updating separate services running on https://vaie.art/.
 
-This repository exposes a CLI that:
+**Problem:**
+1. I have a lot of disparate SvelteKit projects with backends I need to run at the same time, but I don't want a monorepo or a single god-service managing literally everything!
+1. I want to keep all of those SvelteKit servers in sync on my host server!
+
+**To this end...** this repository exposes a locally-run CLI that:
 1. Takes a number of local Git repositories or submodules (each one hosting server code like Node.js servers, SvelteKit projects, etc.)
     1. ...and keeps them up to date when prompted
 1. Based on per-service configuration you provide in `services.toml`:
@@ -13,6 +17,8 @@ This repository exposes a CLI that:
 
 Outside of work this repository does, you will still need to manually consider:
 1. Initial setup of the environment on the remote server
+    1. SSH setup 
+    1. One-time package installs
 1. DNS and nameserver setup on the domain registrar or any proxies
 
 ## Workflow
@@ -36,9 +42,14 @@ Outside of work this repository does, you will still need to manually consider:
 ## Dependencies
 CLI needs `git`, `ssh`, `rsync`, `cargo`
 
-Configured build commands also need their local tools. For static Svelte apps, `deno` must resolve on `PATH`; in WSL this can be either Linux `deno` or Windows `deno.exe` through interop
+Configured build commands also need their local tools. For Svelte apps, `deno` must resolve on `PATH`; in WSL this can be either Linux `deno` or Windows `deno.exe` through interop
 
 Windows: consider using WSL with one of the below distros
+```sh
+# in this repo's directory (example, your distro and version will likely not be the same):
+wsl install fedora  # install a new distro
+wsl -d FedoraLinux-44  # enter the installed distro
+```
 
 Fedora:
 ```sh

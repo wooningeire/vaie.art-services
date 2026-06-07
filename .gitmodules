@@ -4,3 +4,6 @@
 [submodule "src/submodules/pudle"]
 	path = src/submodules/pudle
 	url = https://github.com/wooningeire/pudle.git
+[submodule "src/submodules/plover-hatchery"]
+	path = src/submodules/plover-hatchery
+	url = https://github.com/wooningeire/plover-hatchery.git

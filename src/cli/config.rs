@@ -82,9 +82,22 @@ pub enum ServiceKind {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct BuildConfig {
-    pub command: Vec<String>,
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub commands: Vec<Vec<String>>,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
+}
+
+impl BuildConfig {
+    pub fn commands(&self) -> Vec<&Vec<String>> {
+        if let Some(command) = &self.command {
+            return vec![command];
+        }
+
+        self.commands.iter().collect()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -496,12 +509,24 @@ fn validate_sync_source(service_name: &str, source: &Path) -> Result<PathBuf> {
 
 fn validate_build(service_name: &str, build: &Option<BuildConfig>) -> Result<()> {
     if let Some(build) = build {
-        if build.command.is_empty() || build.command[0].trim().is_empty() {
-            bail!("service `{service_name}` build.command must contain a program");
+        if build.command.is_some() && !build.commands.is_empty() {
+            bail!("service `{service_name}` build must use either command or commands, not both");
         }
 
-        if build.command.iter().any(|part| part.contains('\0')) {
-            bail!("service `{service_name}` build.command contains an invalid argument");
+        let commands = build.commands();
+
+        if commands.is_empty() {
+            bail!("service `{service_name}` build must contain at least one command");
+        }
+
+        for command in commands {
+            if command.is_empty() || command[0].trim().is_empty() {
+                bail!("service `{service_name}` build command must contain a program");
+            }
+
+            if command.iter().any(|part| part.contains('\0')) {
+                bail!("service `{service_name}` build command contains an invalid argument");
+            }
         }
     }
 
@@ -768,6 +793,39 @@ route_path = "/pudle"
         );
 
         assert!(error.to_string().contains("service name"));
+    }
+
+    #[test]
+    fn build_rejects_command_and_commands_together() {
+        let fixture = ConfigFixture::new();
+        let error = fixture.load_error(
+            r#"
+manifest_version = 1
+
+[remote]
+host = "vaie.art"
+user = "root"
+
+[caddy]
+primary_host = "vaie.art"
+
+[[services]]
+name = "pudle"
+kind = "static_site"
+local_path = "src/submodules/pudle"
+remote_path = "/web/pudle"
+route_path = "/pudle"
+
+[services.build]
+command = ["deno", "task", "build"]
+commands = [
+    ["deno", "task", "convert-media"],
+    ["deno", "task", "build"],
+]
+"#,
+        );
+
+        assert!(error.to_string().contains("either command or commands"));
     }
 
     #[test]

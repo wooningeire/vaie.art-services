@@ -27,7 +27,14 @@ kind = "deno_app"
 local_path = "src/submodules/vaie.art"
 remote_path = "/srv/vaie.art"
 port = 3000
+sync_source = "build"
 entrypoint = "index.js"
+
+[services.build]
+commands = [
+    ["deno", "task", "convert-media"],
+    ["deno", "task", "build"],
+]
 
 [[services]]
 name = "pudle"

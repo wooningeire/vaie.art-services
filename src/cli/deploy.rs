@@ -52,7 +52,7 @@ pub fn deployment_plan(map: &ServiceMap, rendered_paths: &RenderedPaths) -> Resu
     ));
 
     for service in &map.services {
-        if let Some(command) = service_build_command(service) {
+        for command in service_build_commands(service) {
             commands.push(command);
         }
 
@@ -98,7 +98,7 @@ pub fn deployment_plan(map: &ServiceMap, rendered_paths: &RenderedPaths) -> Resu
 
 fn ensure_deploy_programs_available(map: &ServiceMap) -> Result<()> {
     for service in &map.services {
-        if let Some(command) = service_build_command(service) {
+        for command in service_build_commands(service) {
             ensure_command_can_start(&command).with_context(|| {
                 format!(
                     "service `{}` build program `{}` is unavailable",
@@ -114,17 +114,24 @@ fn ensure_deploy_programs_available(map: &ServiceMap) -> Result<()> {
     Ok(())
 }
 
-fn service_build_command(service: &ResolvedService) -> Option<ProcessCommand> {
-    let build = service.build.as_ref()?;
-    let mut parts = build.command.iter();
-    let program = parts.next().expect("validated build command");
+fn service_build_commands(service: &ResolvedService) -> Vec<ProcessCommand> {
+    let Some(build) = &service.build else {
+        return Vec::new();
+    };
 
-    Some(
-        ProcessCommand::new(program.as_str())
-            .args(parts.cloned())
-            .cwd(service.local_path.clone())
-            .envs(build.environment.clone()),
-    )
+    build
+        .commands()
+        .into_iter()
+        .map(|command| {
+            let mut parts = command.iter();
+            let program = parts.next().expect("validated build command");
+
+            ProcessCommand::new(program.as_str())
+                .args(parts.cloned())
+                .cwd(service.local_path.clone())
+                .envs(build.environment.clone())
+        })
+        .collect()
 }
 
 pub fn format_plan(plan: &DeploymentPlan) -> String {
@@ -377,6 +384,60 @@ mod tests {
             .position(|command| command.contains("rsync") && command.contains("/build/"))
             .expect("rsync command");
 
+        assert!(build_index < rsync_index);
+    }
+
+    #[test]
+    fn deploy_plan_runs_ordered_build_commands_before_service_rsync() {
+        let fixture = DeployFixture::with_config(
+            r#"
+manifest_version = 1
+
+[remote]
+host = "vaie.art"
+user = "root"
+
+[caddy]
+primary_host = "vaie.art"
+
+[[services]]
+name = "pudle"
+kind = "static_site"
+local_path = "src/submodules/pudle"
+remote_path = "/web/pudle"
+sync_source = "build"
+route_path = "/pudle"
+
+[services.build]
+commands = [
+    ["deno", "task", "convert-media"],
+    ["deno", "task", "build"],
+]
+"#,
+        );
+        let map = fixture.map();
+        let plan = plan_without_rendering(&map, &fixture.dir.path().join("rendered"))
+            .expect("deployment plan");
+        let displays = plan
+            .commands
+            .iter()
+            .map(ProcessCommand::display)
+            .collect::<Vec<_>>();
+
+        let convert_index = displays
+            .iter()
+            .position(|command| command.contains("deno task convert-media"))
+            .expect("convert-media command");
+        let build_index = displays
+            .iter()
+            .position(|command| command.contains("deno task build"))
+            .expect("build command");
+        let rsync_index = displays
+            .iter()
+            .position(|command| command.contains("rsync") && command.contains("/build/"))
+            .expect("rsync command");
+
+        assert!(convert_index < build_index);
         assert!(build_index < rsync_index);
     }
 

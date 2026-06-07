@@ -38,13 +38,16 @@ sudo apt install -y git rsync openssh-client
 ```
 
 ## Builds and rsync
-In `services.toml`, each service can define a build step:
+In `services.toml`, each service can define build commands:
 ```toml
 [services.build]
-command = ["deno", "task", "build"]
+commands = [
+    ["deno", "task", "convert-media"],
+    ["deno", "task", "build"],
+]
 ```
 
-The build runs locally at `local_path` before uploading the artifact with `rsync` by default. Use `sync_source` to specify the build output directory (e.g. `build`, `dist`)
+The build runs locally in the submodule before uploading the artifact with `rsync` by default. Use `sync_source` to specify the build output directory (e.g. `build`, `dist`)
 
 ## Authentication
 Remote details go in `services.local.toml`, which is gitignored.

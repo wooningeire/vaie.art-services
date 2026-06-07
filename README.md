@@ -72,4 +72,4 @@ commands = [
 ]
 ```
 
-The build runs locally in the submodule before uploading the artifact with `rsync` by default. Use `sync_source` to specify the build output directory (e.g. `build`, `dist`)
+The build runs locally in the submodule before uploading the artifact with `rsync` by default. Use `sync_source` to specify the build output directory (e.g. `build`, `dist`). The build output directory is mirrored to the specified remote path; any stale files in that path are deleted

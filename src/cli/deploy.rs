@@ -283,16 +283,7 @@ fn install_script(map: &ServiceMap) -> String {
     script.push_str("done\n");
 
     for service in &map.services {
-        script.push_str("mkdir -p ");
-        script.push_str(&sh_quote(&service.remote_path));
-        script.push('\n');
-        script.push_str("rsync -a --delete ");
-        script.push_str("\"$sync_dir/");
-        script.push_str(&service.name);
-        script.push_str("/\"");
-        script.push(' ');
-        script.push_str(&sh_quote(&remote_child(&service.remote_path, "")));
-        script.push('\n');
+        append_service_install_sync(&mut script, service);
     }
 
     script.push_str("caddy_changed=0\n");
@@ -303,7 +294,6 @@ fn install_script(map: &ServiceMap) -> String {
     script.push_str("    caddy_changed=1\n");
     script.push_str("fi\n");
     script.push_str("systemd_changed=0\n");
-    script.push_str("changed_units=\"\"\n");
 
     for service in &map.services {
         if let ResolvedServiceKind::DenoApp { service_name, .. } = &service.kind {
@@ -314,7 +304,6 @@ fn install_script(map: &ServiceMap) -> String {
             script.push_str("target_unit=\"$systemd_dir/$unit\"\n");
             script.push_str("if [ ! -f \"$target_unit\" ] || ! cmp -s \"$source_unit\" \"$target_unit\"; then\n");
             script.push_str("    install -m 0644 \"$source_unit\" \"$target_unit\"\n");
-            script.push_str("    changed_units=\"$changed_units $unit\"\n");
             script.push_str("    systemd_changed=1\n");
             script.push_str("fi\n");
         }
@@ -335,10 +324,24 @@ fn install_script(map: &ServiceMap) -> String {
     script.push_str("done\n");
     script.push_str("if [ \"$systemd_changed\" -eq 1 ]; then systemctl daemon-reload; fi\n");
     script.push_str("for unit in $expected_units; do systemctl enable --now \"$unit\"; done\n");
-    script.push_str("for unit in $changed_units; do systemctl restart \"$unit\"; done\n");
+    script.push_str("# Artifact syncs can change server code without changing the systemd unit.\n");
+    script.push_str("for unit in $expected_units; do systemctl restart \"$unit\"; done\n");
     script.push_str("if [ \"$caddy_changed\" -eq 1 ]; then systemctl reload caddy || systemctl restart caddy; fi\n");
 
     script
+}
+
+fn append_service_install_sync(script: &mut String, service: &ResolvedService) {
+    script.push_str("mkdir -p ");
+    script.push_str(&sh_quote(&service.remote_path));
+    script.push('\n');
+    script.push_str("rsync -a --delete ");
+    script.push_str("\"$sync_dir/");
+    script.push_str(&service.name);
+    script.push_str("/\"");
+    script.push(' ');
+    script.push_str(&sh_quote(&remote_child(&service.remote_path, "")));
+    script.push('\n');
 }
 
 fn sh_quote(value: &str) -> String {
@@ -463,6 +466,30 @@ commands = [
             .expect("remote install script");
 
         assert!(validate_index < install_index);
+    }
+
+    #[test]
+    fn remote_install_restarts_deno_services_after_sync() {
+        let fixture = DeployFixture::new();
+        let map = fixture.map();
+        let plan = plan_without_rendering(&map, &fixture.dir.path().join("rendered"))
+            .expect("deployment plan");
+        let install_script = plan
+            .commands
+            .last()
+            .expect("install command")
+            .args
+            .last()
+            .expect("install script");
+
+        assert!(install_script.contains(
+            "# Artifact syncs can change server code without changing the systemd unit.",
+        ));
+        assert!(
+            install_script
+                .contains("for unit in $expected_units; do systemctl restart \"$unit\"; done")
+        );
+        assert!(!install_script.contains("changed_units"));
     }
 
     #[test]

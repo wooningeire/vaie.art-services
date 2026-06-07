@@ -1,0 +1,4 @@
+[remote]
+user = "root"
+host = "127.0.0.1"
+identity_file = "~/.ssh/my_wonderful_private_key"  # optional

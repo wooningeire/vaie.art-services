@@ -1,0 +1,41 @@
+manifest_version = 1
+
+[remote]
+port = 22
+ssh_program = "ssh"
+rsync_program = "rsync"
+tmp_dir = "/tmp/vaieart-services"
+caddyfile_path = "/etc/caddy/Caddyfile"
+systemd_dir = "/etc/systemd/system"
+
+# indicates that a service is managed by this project
+managed_prefix = "vaieart-"
+
+# where's the deno executable?
+deno_bin = "/root/.deno/bin/deno"
+
+# Put private SSH connection details in ignored `services.local.toml`.
+# This file intentionally keeps host/user/IP/key paths out of tracked config.
+
+[caddy]
+primary_host = "vaie.art"
+www_redirect_host = "www.vaie.art"
+
+[[services]]
+name = "vaie.art"
+kind = "deno_app"
+local_path = "src/submodules/vaie.art"
+remote_path = "/srv/vaie.art"
+port = 3000
+entrypoint = "index.js"
+
+[[services]]
+name = "pudle"
+kind = "static_site"
+local_path = "src/submodules/pudle"
+remote_path = "/web/pudle"
+sync_source = "build"
+route_path = "/pudle"
+
+[services.build]
+command = ["deno", "task", "build"]

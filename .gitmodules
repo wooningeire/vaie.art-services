@@ -1,0 +1,6 @@
+[submodule "src/submodules/vaie.art"]
+	path = src/submodules/vaie.art
+	url = https://github.com/wooningeire/vaie.art.git
+[submodule "src/submodules/pudle"]
+	path = src/submodules/pudle
+	url = https://github.com/wooningeire/pudle.git

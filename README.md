@@ -1,5 +1,19 @@
 # https://vaie.art/ service map & deployment
-Central location for managing, deploying, and updating separate services and repositories running on https://vaie.art/
+Central location for managing, deploying, and updating separate services running on https://vaie.art/
+
+This repository exposes a CLI that:
+1. Takes a number of local Git repositories or submodules (each one hosting server code like Node.js servers, SvelteKit projects, etc.)
+    1. ...and keeps them up to date when prompted
+1. Based on per-service configuration you provide in `services.toml`:
+    1. Autogenerates a `Caddyfile` web routing config
+    1. Autogenerates a `systemd` config for each service, for concurrently running all the services
+    1. Builds each project using a set of commands
+    1. Uploads the `Caddyfile`, `systemd`, and build artifacts to a remote server
+        1. ...and cleans up stale builds/configs from previous runs
+
+Outside of work this repository does, you will still need to manually consider:
+1. Initial setup of the environment on the remote server
+1. DNS and nameserver setup on the domain registrar or any proxies
 
 ## Workflow
 1. Clone any new repositories to build services from under `./src/submodules/`
@@ -48,6 +62,3 @@ commands = [
 ```
 
 The build runs locally in the submodule before uploading the artifact with `rsync` by default. Use `sync_source` to specify the build output directory (e.g. `build`, `dist`)
-
-## Authentication
-Remote details go in `services.local.toml`, which is gitignored.

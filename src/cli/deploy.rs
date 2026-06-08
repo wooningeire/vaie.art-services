@@ -9,7 +9,7 @@ use super::process::{
 use super::render::{RenderedPaths, write_artifacts};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DeploymentPlan {
+pub struct DeploymentCommandList {
     pub commands: Vec<ProcessCommand>,
 }
 
@@ -17,7 +17,7 @@ pub fn deploy(map: &ServiceMap, output_dir: &Path, runner: &dyn CommandRunner) -
     ensure_deploy_programs_available(map)?;
 
     let rendered_paths = write_artifacts(map, output_dir)?;
-    let plan = deployment_plan(map, &rendered_paths)?;
+    let plan = build_deployment_command_list(map, &rendered_paths)?;
 
     for command in &plan.commands {
         runner.run(command)?;
@@ -26,16 +26,22 @@ pub fn deploy(map: &ServiceMap, output_dir: &Path, runner: &dyn CommandRunner) -
     Ok(())
 }
 
-pub fn plan_without_rendering(map: &ServiceMap, output_dir: &Path) -> Result<DeploymentPlan> {
+pub fn build_deployment_command_list_for_output_dir(
+    map: &ServiceMap,
+    output_dir: &Path,
+) -> Result<DeploymentCommandList> {
     let rendered_paths = RenderedPaths {
         caddyfile: output_dir.join("Caddyfile"),
         systemd_dir: output_dir.join("systemd"),
     };
 
-    deployment_plan(map, &rendered_paths)
+    build_deployment_command_list(map, &rendered_paths)
 }
 
-pub fn deployment_plan(map: &ServiceMap, rendered_paths: &RenderedPaths) -> Result<DeploymentPlan> {
+pub fn build_deployment_command_list(
+    map: &ServiceMap,
+    rendered_paths: &RenderedPaths,
+) -> Result<DeploymentCommandList> {
     let mut commands = Vec::new();
     let ssh_target = remote_ssh_target(&map.remote)?;
     let rsync_target = remote_rsync_target(&map.remote)?;
@@ -93,7 +99,7 @@ pub fn deployment_plan(map: &ServiceMap, rendered_paths: &RenderedPaths) -> Resu
     ));
     commands.push(ssh_command(&map.remote, &ssh_target, &install_script(map)));
 
-    Ok(DeploymentPlan { commands })
+    Ok(DeploymentCommandList { commands })
 }
 
 fn ensure_deploy_programs_available(map: &ServiceMap) -> Result<()> {
@@ -134,7 +140,7 @@ fn service_build_commands(service: &ResolvedService) -> Vec<ProcessCommand> {
         .collect()
 }
 
-pub fn format_plan(plan: &DeploymentPlan) -> String {
+pub fn format_plan(plan: &DeploymentCommandList) -> String {
     let mut output = String::new();
 
     for (index, command) in plan.commands.iter().enumerate() {
@@ -370,7 +376,7 @@ mod tests {
     fn deploy_plan_builds_before_service_rsync() {
         let fixture = DeployFixture::new();
         let map = fixture.map();
-        let plan = plan_without_rendering(&map, &fixture.dir.path().join("rendered"))
+        let plan = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
             .expect("deployment plan");
         let displays = plan
             .commands
@@ -419,7 +425,7 @@ commands = [
 "#,
         );
         let map = fixture.map();
-        let plan = plan_without_rendering(&map, &fixture.dir.path().join("rendered"))
+        let plan = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
             .expect("deployment plan");
         let displays = plan
             .commands
@@ -448,7 +454,7 @@ commands = [
     fn deploy_plan_validates_caddy_before_remote_install_script() {
         let fixture = DeployFixture::new();
         let map = fixture.map();
-        let plan = plan_without_rendering(&map, &fixture.dir.path().join("rendered"))
+        let plan = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
             .expect("deployment plan");
         let displays = plan
             .commands
@@ -472,7 +478,7 @@ commands = [
     fn remote_install_restarts_deno_services_after_sync() {
         let fixture = DeployFixture::new();
         let map = fixture.map();
-        let plan = plan_without_rendering(&map, &fixture.dir.path().join("rendered"))
+        let plan = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
             .expect("deployment plan");
         let install_script = plan
             .commands
@@ -496,7 +502,7 @@ commands = [
     fn dry_run_executor_records_commands_without_contacting_remote() {
         let fixture = DeployFixture::new();
         let map = fixture.map();
-        let plan = plan_without_rendering(&map, &fixture.dir.path().join("rendered"))
+        let plan = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
             .expect("deployment plan");
         let runner = RecordingRunner::default();
 
@@ -518,7 +524,7 @@ commands = [
     fn deployment_plan_requires_remote_host() {
         let fixture = DeployFixture::new_without_remote_host();
         let map = fixture.map();
-        let error = plan_without_rendering(&map, &fixture.dir.path().join("rendered"))
+        let error = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
             .expect_err("deployment plan should require remote host");
 
         assert!(error.to_string().contains("remote.host is required"));
@@ -583,7 +589,7 @@ route_path = "/pudle"
 "#,
         );
         let map = fixture.map();
-        let plan = plan_without_rendering(&map, &fixture.dir.path().join("rendered"))
+        let plan = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
             .expect("deployment plan");
         let ssh_command = plan
             .commands

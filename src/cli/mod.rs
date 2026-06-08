@@ -7,7 +7,7 @@ pub mod config;
 use config::Config;
 
 pub mod deploy;
-use deploy::{deploy, format_plan, plan_without_rendering};
+use deploy::{build_deployment_command_list_for_output_dir, deploy, format_plan};
 
 pub mod git;
 use git::update_repositories;
@@ -36,15 +36,12 @@ enum Commands {
     Update,
     Render,
     Plan,
-    Deploy {
-        #[arg(long)]
-        dry_run: bool,
-    },
+    Deploy,
 }
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
-    let output = run_cli(cli, &RealCommandRunner)?;
+    let output = route_cli_subcommand(cli, &RealCommandRunner)?;
 
     if !output.is_empty() {
         print!("{output}");
@@ -59,10 +56,10 @@ where
     T: Into<OsString> + Clone,
 {
     let cli = Cli::try_parse_from(args)?;
-    run_cli(cli, runner)
+    route_cli_subcommand(cli, runner)
 }
 
-fn run_cli(cli: Cli, runner: &dyn CommandRunner) -> Result<String> {
+fn route_cli_subcommand(cli: Cli, runner: &dyn CommandRunner) -> Result<String> {
     let map = load_map(&cli.config)?;
 
     match cli.command {
@@ -74,10 +71,12 @@ fn run_cli(cli: Cli, runner: &dyn CommandRunner) -> Result<String> {
                 artifacts.systemd_units.len(),
             ))
         }
+
         Commands::Update => {
             update_repositories(&map, runner)?;
             Ok("Repositories updated\n".to_string())
         }
+
         Commands::Render => {
             let paths = write_artifacts(&map, &cli.output_dir)?;
             Ok(format!(
@@ -86,16 +85,13 @@ fn run_cli(cli: Cli, runner: &dyn CommandRunner) -> Result<String> {
                 paths.systemd_dir.display(),
             ))
         }
-        Commands::Plan => {
-            let plan = plan_without_rendering(&map, &cli.output_dir)?;
-            Ok(format_plan(&plan))
-        }
-        Commands::Deploy { dry_run } => {
-            if dry_run {
-                let plan = plan_without_rendering(&map, &cli.output_dir)?;
-                return Ok(format_plan(&plan));
-            }
 
+        Commands::Plan => {
+            let command_list = build_deployment_command_list_for_output_dir(&map, &cli.output_dir)?;
+            Ok(format_plan(&command_list))
+        }
+
+        Commands::Deploy => {
             deploy(&map, &cli.output_dir, runner)?;
             Ok("Deployment complete\n".to_string())
         }

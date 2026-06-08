@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -12,6 +13,11 @@ pub fn update_repositories(map: &ServiceMap, runner: &dyn CommandRunner) -> Resu
     )?;
 
     for path in unique_repo_paths(map) {
+        println!("\x1b[35mupdating {} :: \x1b[0m", path.display());
+        io::stdout()
+            .flush()
+            .context("failed to flush update status")?;
+
         runner.run(
             &ProcessCommand::new("git")
                 .arg("-C")

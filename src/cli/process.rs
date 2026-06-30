@@ -63,6 +63,13 @@ impl ProcessCommand {
 
 pub trait CommandRunner {
     fn run(&self, command: &ProcessCommand) -> Result<()>;
+
+    fn output(&self, command: &ProcessCommand) -> Result<String> {
+        bail!(
+            "runner does not support captured output for `{}`",
+            command.display(),
+        );
+    }
 }
 
 #[derive(Default)]
@@ -70,20 +77,7 @@ pub struct RealCommandRunner;
 
 impl CommandRunner for RealCommandRunner {
     fn run(&self, command: &ProcessCommand) -> Result<()> {
-        ensure_working_directory(command)?;
-
-        let program = resolve_program(&command.program, command.cwd.as_deref())
-            .unwrap_or_else(|| PathBuf::from(&command.program));
-        let mut process = Command::new(program);
-        process.args(&command.args);
-
-        if let Some(cwd) = &command.cwd {
-            process.current_dir(cwd);
-        }
-
-        for (key, value) in &command.env {
-            process.env(key, value);
-        }
+        let mut process = process_for_command(command)?;
 
         let status = process.status().with_context(|| {
             format!(
@@ -98,6 +92,41 @@ impl CommandRunner for RealCommandRunner {
         }
 
         Ok(())
+    }
+
+    fn output(&self, command: &ProcessCommand) -> Result<String> {
+        let mut process = process_for_command(command)?;
+
+        let output = process.output().with_context(|| {
+            format!(
+                "failed to start program `{}` for `{}`",
+                command.program,
+                command.display(),
+            )
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = stderr.trim();
+
+            if stderr.is_empty() {
+                bail!(
+                    "command failed with {}: `{}`",
+                    output.status,
+                    command.display()
+                );
+            }
+
+            bail!(
+                "command failed with {}: `{}`: {}",
+                output.status,
+                command.display(),
+                stderr,
+            );
+        }
+
+        String::from_utf8(output.stdout)
+            .with_context(|| format!("command output was not UTF-8 for `{}`", command.display()))
     }
 }
 
@@ -153,6 +182,25 @@ fn ensure_working_directory(command: &ProcessCommand) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn process_for_command(command: &ProcessCommand) -> Result<Command> {
+    ensure_working_directory(command)?;
+
+    let program = resolve_program(&command.program, command.cwd.as_deref())
+        .unwrap_or_else(|| PathBuf::from(&command.program));
+    let mut process = Command::new(program);
+    process.args(&command.args);
+
+    if let Some(cwd) = &command.cwd {
+        process.current_dir(cwd);
+    }
+
+    for (key, value) in &command.env {
+        process.env(key, value);
+    }
+
+    Ok(process)
 }
 
 fn resolve_program(program: &str, cwd: Option<&Path>) -> Option<PathBuf> {

@@ -33,7 +33,7 @@ Outside of work this repository does, you will still need to manually consider:
 
 ## Commands
 - `check`: validate config, local repo paths, ports, routes, and generated templates
-- `update`: run `git fetch --all --prune` and `git pull --ff-only` for each configured repo
+- `update`: run `git fetch --all --prune`, then fast-forward each configured repo with `--autostash`. Branch checkouts pull their configured upstream; detached checkouts pull `origin HEAD`. If autostash conflicts, update reports the unmerged files
 - `render`: write generated artifacts to `target/vaieart-services/`
 - `plan`: print the deployment command sequence without running it
 - `deploy`: render artifacts, run local build commands, upload with `rsync`, validate Caddy, and apply changes over SSH.

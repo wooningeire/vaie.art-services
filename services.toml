@@ -34,6 +34,7 @@ route_path = "/"
 
 [services.build]
 commands = [
+    ["deno", "install", "--frozen-lockfile"],
     ["deno", "task", "convert-media"],
     ["deno", "task", "build"],
 ]
@@ -49,6 +50,7 @@ route_path = "/pudle"
 
 [services.build]
 commands = [
+    ["deno", "install", "--frozen-lockfile"],
     ["deno", "task", "build"],
 ]
 
@@ -65,5 +67,6 @@ route_path = "/hatchery"
 
 [services.build]
 commands = [
+    ["deno", "install", "--frozen-lockfile"],
     ["deno", "task", "build"],
 ]

@@ -11,6 +11,8 @@ pub struct Config {
     pub remote: RemoteConfig,
     pub caddy: CaddyConfig,
     #[serde(default)]
+    pub pocketbase: Option<PocketBaseConfig>,
+    #[serde(default)]
     pub services: Vec<ServiceConfig>,
 }
 
@@ -47,6 +49,31 @@ pub struct CaddyConfig {
     pub primary_host: String,
     #[serde(default)]
     pub www_redirect_host: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PocketBaseConfig {
+    pub name: String,
+    pub host: String,
+    pub source_path: PathBuf,
+    pub remote_path: String,
+    pub data_dir: String,
+    #[serde(default)]
+    pub backup_dir: Option<String>,
+    #[serde(default = "default_pocketbase_port")]
+    pub port: u16,
+    #[serde(default = "default_pocketbase_binary")]
+    pub binary: String,
+    #[serde(default)]
+    pub service_name: Option<String>,
+    #[serde(default)]
+    pub environment_file: Option<String>,
+    #[serde(default = "default_pocketbase_request_body_max_size")]
+    pub request_body_max_size: String,
+    #[serde(default = "default_pocketbase_read_timeout")]
+    pub read_timeout: String,
+    #[serde(default)]
+    pub encryption_env: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -105,7 +132,25 @@ pub struct ServiceMap {
     pub root: PathBuf,
     pub remote: RemoteConfig,
     pub caddy: CaddyConfig,
+    pub pocketbase: Option<ResolvedPocketBase>,
     pub services: Vec<ResolvedService>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedPocketBase {
+    pub name: String,
+    pub host: String,
+    pub source_path: PathBuf,
+    pub remote_path: String,
+    pub data_dir: String,
+    pub backup_dir: Option<String>,
+    pub port: u16,
+    pub binary: String,
+    pub service_name: String,
+    pub environment_file: Option<String>,
+    pub request_body_max_size: String,
+    pub read_timeout: String,
+    pub encryption_env: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +234,19 @@ impl Config {
         let mut routes = BTreeSet::new();
         let mut systemd_units = BTreeSet::new();
         let mut services = Vec::with_capacity(self.services.len());
+        let pocketbase = self
+            .pocketbase
+            .map(|pocketbase| {
+                resolve_pocketbase(
+                    pocketbase,
+                    &root,
+                    &self.remote.managed_prefix,
+                    &mut ports,
+                    &mut routes,
+                    &mut systemd_units,
+                )
+            })
+            .transpose()?;
 
         for service in self.services {
             validate_service_name(&service.name)?;
@@ -198,13 +256,7 @@ impl Config {
             }
 
             let local_path = resolve_local_path(&root, &service.local_path)?;
-            if !local_path.starts_with(&submodules_root) {
-                bail!(
-                    "service `{}` local_path must be under `{}`",
-                    service.name,
-                    submodules_root.display(),
-                );
-            }
+            validate_service_local_path(&service.name, &local_path, &root, &submodules_root)?;
 
             let sync_source = validate_sync_source(&service.name, &service.sync_source)?;
             validate_remote_path(&service.name, &service.remote_path)?;
@@ -295,6 +347,7 @@ impl Config {
             root,
             remote: self.remote,
             caddy: self.caddy,
+            pocketbase,
             services,
         })
     }
@@ -406,13 +459,97 @@ impl ServiceMap {
     }
 
     pub fn systemd_service_names(&self) -> Vec<String> {
-        self.deno_services()
+        let mut service_names = self
+            .deno_services()
             .filter_map(|service| match &service.kind {
                 ResolvedServiceKind::DenoApp { service_name, .. } => Some(service_name.clone()),
                 ResolvedServiceKind::StaticSite => None,
             })
-            .collect()
+            .collect::<Vec<_>>();
+
+        if let Some(pocketbase) = &self.pocketbase {
+            service_names.push(pocketbase.service_name.clone());
+        }
+
+        service_names
     }
+}
+
+fn resolve_pocketbase(
+    pocketbase: PocketBaseConfig,
+    root: &Path,
+    managed_prefix: &str,
+    ports: &mut BTreeSet<u16>,
+    routes: &mut BTreeSet<String>,
+    systemd_units: &mut BTreeSet<String>,
+) -> Result<ResolvedPocketBase> {
+    validate_service_name(&pocketbase.name)?;
+    validate_host("pocketbase.host", &pocketbase.host)?;
+
+    if pocketbase.port == 0 {
+        bail!("pocketbase port must be greater than 0");
+    }
+
+    if !ports.insert(pocketbase.port) {
+        bail!("duplicate Deno/PocketBase port `{}`", pocketbase.port);
+    }
+
+    let route_key = format!("{}:/", pocketbase.host);
+    if !routes.insert(route_key.clone()) {
+        bail!("duplicate Caddy route `{route_key}`");
+    }
+
+    let service_name = pocketbase
+        .service_name
+        .unwrap_or_else(|| generated_service_name(managed_prefix, &pocketbase.name));
+    validate_systemd_service_name(&pocketbase.name, managed_prefix, &service_name)?;
+
+    if !systemd_units.insert(service_name.clone()) {
+        bail!("duplicate systemd service `{service_name}`");
+    }
+
+    let source_path = resolve_local_path(root, &pocketbase.source_path)?;
+    if !source_path.starts_with(root) {
+        bail!("pocketbase source_path must be under `{}`", root.display(),);
+    }
+
+    validate_remote_path("pocketbase.remote_path", &pocketbase.remote_path)?;
+    validate_remote_path("pocketbase.data_dir", &pocketbase.data_dir)?;
+    validate_remote_path("pocketbase.binary", &pocketbase.binary)?;
+
+    if let Some(backup_dir) = &pocketbase.backup_dir {
+        validate_remote_path("pocketbase.backup_dir", backup_dir)?;
+    }
+
+    if let Some(environment_file) = &pocketbase.environment_file {
+        validate_remote_path("pocketbase.environment_file", environment_file)?;
+    }
+
+    validate_token(
+        "pocketbase.request_body_max_size",
+        &pocketbase.request_body_max_size,
+    )?;
+    validate_token("pocketbase.read_timeout", &pocketbase.read_timeout)?;
+
+    if let Some(encryption_env) = &pocketbase.encryption_env {
+        validate_environment_key("pocketbase.encryption_env", encryption_env)?;
+    }
+
+    Ok(ResolvedPocketBase {
+        name: pocketbase.name,
+        host: pocketbase.host,
+        source_path,
+        remote_path: pocketbase.remote_path,
+        data_dir: pocketbase.data_dir,
+        backup_dir: pocketbase.backup_dir,
+        port: pocketbase.port,
+        binary: pocketbase.binary,
+        service_name,
+        environment_file: pocketbase.environment_file,
+        request_body_max_size: pocketbase.request_body_max_size,
+        read_timeout: pocketbase.read_timeout,
+        encryption_env: pocketbase.encryption_env,
+    })
 }
 
 fn validate_remote(remote: &RemoteConfig) -> Result<()> {
@@ -447,6 +584,25 @@ fn validate_remote(remote: &RemoteConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn validate_service_local_path(
+    service_name: &str,
+    local_path: &Path,
+    root: &Path,
+    submodules_root: &Path,
+) -> Result<()> {
+    let local_repositories_root = root.parent().unwrap_or(root);
+
+    if local_path.starts_with(submodules_root) || local_path.starts_with(local_repositories_root) {
+        return Ok(());
+    }
+
+    bail!(
+        "service `{service_name}` local_path must be under `{}` or sibling repo root `{}`",
+        submodules_root.display(),
+        local_repositories_root.display(),
+    );
 }
 
 fn validate_service_name(name: &str) -> Result<()> {
@@ -485,6 +641,31 @@ fn validate_remote_path(service_name: &str, path: &str) -> Result<()> {
 fn validate_entrypoint(service_name: &str, entrypoint: &str) -> Result<()> {
     if entrypoint.trim().is_empty() || entrypoint.contains('\0') || entrypoint.contains("..") {
         bail!("deno_app `{service_name}` entrypoint is invalid");
+    }
+
+    Ok(())
+}
+
+fn validate_token(label: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() || value.contains(char::is_whitespace) || value.contains('\0') {
+        bail!("{label} must be a single non-empty token");
+    }
+
+    Ok(())
+}
+
+fn validate_environment_key(label: &str, value: &str) -> Result<()> {
+    let valid = !value.is_empty()
+        && value
+            .chars()
+            .all(|char| char.is_ascii_alphanumeric() || char == '_')
+        && value
+            .chars()
+            .next()
+            .is_some_and(|char| char.is_ascii_alphabetic() || char == '_');
+
+    if !valid {
+        bail!("{label} must be a valid environment variable name");
     }
 
     Ok(())
@@ -652,6 +833,22 @@ fn default_sync_source() -> PathBuf {
     PathBuf::from(".")
 }
 
+fn default_pocketbase_port() -> u16 {
+    8090
+}
+
+fn default_pocketbase_binary() -> String {
+    "/usr/local/bin/pocketbase".to_string()
+}
+
+fn default_pocketbase_request_body_max_size() -> String {
+    "25MB".to_string()
+}
+
+fn default_pocketbase_read_timeout() -> String {
+    "360s".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -674,6 +871,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pocketbase_config_parses_and_owns_a_systemd_unit() {
+        let fixture = ConfigFixture::new();
+        let map = fixture.load(
+            r#"
+manifest_version = 1
+
+[remote]
+host = "vaie.art"
+user = "root"
+
+[caddy]
+primary_host = "vaie.art"
+
+[pocketbase]
+name = "site-pocketbase"
+host = "pb.vaie.art"
+source_path = "src/pocketbase"
+remote_path = "/srv/vaieart-pocketbase"
+data_dir = "/var/lib/vaieart-pocketbase/pb_data"
+backup_dir = "/var/backups/vaieart-pocketbase"
+port = 8090
+environment_file = "/etc/vaieart/pocketbase.env"
+encryption_env = "PB_ENCRYPTION_KEY"
+
+[[services]]
+name = "pudle"
+kind = "static_site"
+local_path = "src/submodules/pudle"
+remote_path = "/web/pudle"
+route_path = "/pudle"
+"#,
+        );
+        let pocketbase = map.pocketbase.as_ref().expect("pocketbase config");
+
+        assert_eq!(pocketbase.host, "pb.vaie.art");
+        assert_eq!(pocketbase.port, 8090);
+        assert_eq!(pocketbase.service_name, "vaieart-site-pocketbase.service");
+        assert_eq!(
+            map.systemd_service_names(),
+            vec!["vaieart-site-pocketbase.service"],
+        );
+    }
     #[test]
     fn duplicate_ports_are_rejected() {
         let fixture = ConfigFixture::new();
@@ -865,6 +1105,7 @@ identity_file = "C:/Users/V/.ssh/vaie_art"
     impl ConfigFixture {
         fn new() -> Self {
             let dir = TempDir::new().expect("temp dir");
+            fs::create_dir_all(dir.path().join("src/pocketbase/pb_migrations")).expect("pb dir");
             fs::create_dir_all(dir.path().join("src/submodules/vaie.art")).expect("vaie dir");
             fs::create_dir_all(dir.path().join("src/submodules/pudle")).expect("pudle dir");
 

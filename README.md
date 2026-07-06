@@ -21,18 +21,18 @@ Outside of work this repository does, you will still need to manually consider:
     1. One-time package installs
 1. DNS and nameserver setup on the domain registrar or any proxies
 
-## Workflow
-1. Clone any new repositories to build services from under `./src/submodules/`
+## Usage
+1. Clone any new repositories to build services from under `./src/submodules/`, or keep sibling checkouts next to this repo and point `local_path` at them
 1. Configure service locations, build commands, build types, etc. in `services.toml`
 1. Configure private SSH connection details in `services.local.toml` (gitignored)
-1. `cargo run -- check` to validate the service map
+1. `cargo run -- check` to validate the format of `services.toml`
 1. `cargo run -- update` to pull latest versions of the listed submodules
 1. `cargo run -- render` to generate a `Caddyfile` and `systemd` configs
 1. `cargo run -- plan` to view the remote build, rsync, validation, and install commands
 1. `cargo run -- deploy` to build configured repositories, rsync files to a remote temp directory, validate Caddy, remove stale artifacts and config files on the server, and restart changed services
 
 ## Commands
-- `check`: validate config, local repo paths, ports, routes, and generated templates
+- `check`: validate config, local repo paths, PocketBase paths, ports, routes, and generated templates
 - `update`: run `git fetch --all --prune`, then fast-forward each configured repo with `--autostash`. Branch checkouts pull their configured upstream; detached checkouts pull `origin HEAD`. If autostash conflicts, update reports the unmerged files
 - `render`: write generated artifacts to `target/vaieart-services/`
 - `plan`: print the deployment command sequence without running it
@@ -43,6 +43,13 @@ Outside of work this repository does, you will still need to manually consider:
 CLI needs `git`, `ssh`, `rsync`, `cargo`
 
 Configured build commands also need their local tools. For Svelte apps, `deno` must resolve on `PATH`; in WSL this can be either Linux `deno` or Windows `deno.exe` through interop
+
+Remote hosts must already have
+1. `caddy`
+1. `systemd`
+1. Deno at the location specified by `remote.deno_bin`
+1. PocketBase at `/usr/local/bin/pocketbase`, `/etc/vaieart/pocketbase.env`
+1. ... any non-Deno service binaries configured in `services.toml`
 
 Windows: consider using WSL with one of the below distros
 ```sh
@@ -72,4 +79,9 @@ commands = [
 ]
 ```
 
-The build runs locally in the submodule before uploading the artifact with `rsync` by default. Use `sync_source` to specify the build output directory (e.g. `build`, `dist`). The build output directory is mirrored to the specified remote path; any stale files in that path are deleted
+The build runs locally in the configured repo before uploading the artifact with `rsync` by default. Use `sync_source` to specify the build output directory (e.g. `build`, `dist`). The build output directory is mirrored to the specified remote path; any stale files in that path are deleted
+
+## PocketBase
+`[pocketbase]` config manages one PocketBase service for the entire site
+
+PocketBase files other than `pb_data` are located in the `pb.vaie.art` submodule; production data is stored on the remote at `/var/lib/vaieart-pocketbase/pb_data` instead of in `/srv` (where all the other PocketBase stuff goes, overwritten on each deploy)

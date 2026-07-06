@@ -1,4 +1,4 @@
-use super::config::{ResolvedService, ResolvedServiceKind, ServiceMap};
+use super::config::{ResolvedPocketBase, ResolvedService, ResolvedServiceKind, ServiceMap};
 use anyhow::{Context, Result};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -28,6 +28,11 @@ pub fn render_artifacts(map: &ServiceMap) -> RenderedArtifacts {
         .deno_services()
         .map(|service| render_systemd_unit(map, service))
         .collect::<Vec<_>>();
+
+    if let Some(pocketbase) = &map.pocketbase {
+        systemd_units.push(render_pocketbase_systemd_unit(pocketbase));
+    }
+
     systemd_units.sort_by(|left, right| left.name.cmp(&right.name));
 
     RenderedArtifacts {
@@ -102,6 +107,10 @@ fn render_caddyfile(map: &ServiceMap) -> String {
         output.push_str("}\n\n");
     }
 
+    if let Some(pocketbase) = &map.pocketbase {
+        render_pocketbase_caddy_block(&mut output, pocketbase);
+    }
+
     if let Some(host) = &map.caddy.www_redirect_host {
         output.push_str(host);
         output.push_str(" {\n");
@@ -144,6 +153,26 @@ fn render_deno_route(output: &mut String, service: &ResolvedService, port: u16) 
     output.push_str(&port.to_string());
     output.push('\n');
     output.push_str("    }\n");
+}
+
+fn render_pocketbase_caddy_block(output: &mut String, pocketbase: &ResolvedPocketBase) {
+    output.push_str(&pocketbase.host);
+    output.push_str(" {\n");
+    output.push_str("    request_body {\n");
+    output.push_str("        max_size ");
+    output.push_str(&pocketbase.request_body_max_size);
+    output.push('\n');
+    output.push_str("    }\n\n");
+    output.push_str("    reverse_proxy 127.0.0.1:");
+    output.push_str(&pocketbase.port.to_string());
+    output.push_str(" {\n");
+    output.push_str("        transport http {\n");
+    output.push_str("            read_timeout ");
+    output.push_str(&pocketbase.read_timeout);
+    output.push('\n');
+    output.push_str("        }\n");
+    output.push_str("    }\n");
+    output.push_str("}\n\n");
 }
 
 fn render_systemd_unit(map: &ServiceMap, service: &ResolvedService) -> SystemdUnit {
@@ -200,6 +229,55 @@ fn render_systemd_unit(map: &ServiceMap, service: &ResolvedService) -> SystemdUn
     }
 }
 
+fn render_pocketbase_systemd_unit(pocketbase: &ResolvedPocketBase) -> SystemdUnit {
+    let mut output = String::new();
+    output.push_str("[Unit]\n");
+    output.push_str("Description=vaie.art managed PocketBase service - ");
+    output.push_str(&pocketbase.name);
+    output.push('\n');
+    output.push_str("After=network-online.target\n");
+    output.push_str("Wants=network-online.target\n\n");
+    output.push_str("[Service]\n");
+    output.push_str("Type=simple\n");
+    output.push_str("User=root\n");
+    output.push_str("Group=root\n");
+    output.push_str("WorkingDirectory=");
+    output.push_str(&pocketbase.remote_path);
+    output.push('\n');
+    output.push_str("LimitNOFILE=4096\n");
+
+    if let Some(environment_file) = &pocketbase.environment_file {
+        output.push_str("EnvironmentFile=");
+        output.push_str(environment_file);
+        output.push('\n');
+    }
+
+    output.push_str("ExecStart=");
+    output.push_str(&pocketbase.binary);
+    output.push_str(" serve --http=127.0.0.1:");
+    output.push_str(&pocketbase.port.to_string());
+    output.push_str(" --dir=");
+    output.push_str(&pocketbase.data_dir);
+    output.push_str(" --migrationsDir=");
+    output.push_str(&remote_child(&pocketbase.remote_path, "pb_migrations"));
+
+    if let Some(encryption_env) = &pocketbase.encryption_env {
+        output.push_str(" --encryptionEnv=");
+        output.push_str(encryption_env);
+    }
+
+    output.push('\n');
+    output.push_str("Restart=on-failure\n");
+    output.push_str("RestartSec=3\n\n");
+    output.push_str("[Install]\n");
+    output.push_str("WantedBy=multi-user.target\n");
+
+    SystemdUnit {
+        name: pocketbase.service_name.clone(),
+        content: output,
+    }
+}
+
 fn compare_routes(left: &&ResolvedService, right: &&ResolvedService) -> Ordering {
     match (left.route_path == "/", right.route_path == "/") {
         (true, false) => Ordering::Greater,
@@ -210,6 +288,14 @@ fn compare_routes(left: &&ResolvedService, right: &&ResolvedService) -> Ordering
             .cmp(&left.route_path.len())
             .then_with(|| left.route_path.cmp(&right.route_path)),
     }
+}
+
+fn remote_child(parent: &str, child: &str) -> String {
+    format!(
+        "{}/{}",
+        parent.trim_end_matches('/'),
+        child.trim_start_matches('/'),
+    )
 }
 
 fn entrypoint_argument(entrypoint: &str) -> String {
@@ -314,7 +400,74 @@ vaie.art {
     }
 
     #[test]
-    fn renders_current_vaie_systemd_unit() {
+    fn renders_pocketbase_caddy_and_systemd_unit() {
+        let dir = TempDir::new().expect("temp dir");
+        fs::create_dir_all(dir.path().join("src/pocketbase/pb_migrations")).expect("pb dir");
+        fs::create_dir_all(dir.path().join("src/submodules/pudle")).expect("pudle dir");
+        let config_path = dir.path().join("services.toml");
+        fs::write(
+            &config_path,
+            r#"
+manifest_version = 1
+
+[remote]
+host = "vaie.art"
+user = "root"
+
+[caddy]
+primary_host = "vaie.art"
+
+[pocketbase]
+name = "site-pocketbase"
+host = "pb.vaie.art"
+source_path = "src/pocketbase"
+remote_path = "/srv/vaieart-pocketbase"
+data_dir = "/var/lib/vaieart-pocketbase/pb_data"
+backup_dir = "/var/backups/vaieart-pocketbase"
+port = 8090
+environment_file = "/etc/vaieart/pocketbase.env"
+encryption_env = "PB_ENCRYPTION_KEY"
+
+[[services]]
+name = "pudle"
+kind = "static_site"
+local_path = "src/submodules/pudle"
+remote_path = "/web/pudle"
+route_path = "/pudle"
+"#,
+        )
+        .expect("write config");
+
+        let map = Config::load(&config_path)
+            .expect("load config")
+            .validate(&config_path)
+            .expect("validate config");
+        let artifacts = render_artifacts(&map);
+
+        assert!(artifacts.caddyfile.contains("pb.vaie.art {"));
+        assert!(artifacts.caddyfile.contains("max_size 25MB"));
+        assert!(artifacts.caddyfile.contains("reverse_proxy 127.0.0.1:8090"));
+        assert_eq!(artifacts.systemd_units.len(), 1);
+        assert_eq!(
+            artifacts.systemd_units[0].name,
+            "vaieart-site-pocketbase.service",
+        );
+        assert!(
+            artifacts.systemd_units[0]
+                .content
+                .contains("WorkingDirectory=/srv/vaieart-pocketbase")
+        );
+        assert!(
+            artifacts.systemd_units[0]
+                .content
+                .contains("EnvironmentFile=/etc/vaieart/pocketbase.env")
+        );
+        assert!(artifacts.systemd_units[0].content.contains(
+            "ExecStart=/usr/local/bin/pocketbase serve --http=127.0.0.1:8090 --dir=/var/lib/vaieart-pocketbase/pb_data --migrationsDir=/srv/vaieart-pocketbase/pb_migrations --encryptionEnv=PB_ENCRYPTION_KEY",
+        ));
+    }
+    #[test]
+    fn renders_current_systemd_unit() {
         let map = fixture_map();
         let artifacts = render_artifacts(&map);
 

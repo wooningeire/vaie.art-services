@@ -22,6 +22,21 @@ primary_host = "vaie.art"
 www_redirect_host = "www.vaie.art"
 
 
+[pocketbase]
+name = "site-pocketbase"
+host = "pb.vaie.art"
+source_path = "src/submodules/pb.vaie.art"
+remote_path = "/srv/vaieart-pocketbase"
+data_dir = "/var/lib/vaieart-pocketbase/pb_data"
+backup_dir = "/var/backups/vaieart-pocketbase"
+port = 8090
+binary = "/usr/local/bin/pocketbase"
+environment_file = "/etc/vaieart/pocketbase.env"
+encryption_env = "PB_ENCRYPTION_KEY"
+request_body_max_size = "25MB"
+read_timeout = "360s"
+
+
 [[services]]
 name = "vaie.art"
 kind = "deno_app"
@@ -66,6 +81,27 @@ entrypoint = "index.js"
 route_path = "/hatchery"
 
 [services.build]
+commands = [
+    ["deno", "install", "--frozen-lockfile"],
+    ["deno", "task", "build"],
+]
+
+[[services]]
+name = "dragonscaler"
+kind = "deno_app"
+host = "dragonscaler.vaie.art"
+local_path = "../dragonscaler"
+remote_path = "/srv/dragonscaler"
+port = 3002
+sync_source = "build"
+entrypoint = "index.js"
+route_path = "/"
+
+[services.environment]
+PUBLIC__POCKETBASE_URL = "https://pb.vaie.art"
+
+[services.build]
+environment = { PUBLIC__POCKETBASE_URL = "https://pb.vaie.art" }
 commands = [
     ["deno", "install", "--frozen-lockfile"],
     ["deno", "task", "build"],

@@ -2,7 +2,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use super::config::{RemoteConfig, ResolvedService, ResolvedServiceKind, ServiceMap};
+use super::config::{
+    RemoteConfig, ResolvedPocketBase, ResolvedService, ResolvedServiceKind, ServiceMap,
+};
 use super::process::{
     CommandRunner, ProcessCommand, ensure_command_can_start, ensure_program_available,
 };
@@ -73,6 +75,14 @@ pub fn build_deployment_command_list(
         ));
     }
 
+    if let Some(pocketbase) = &map.pocketbase {
+        commands.push(pocketbase_rsync_command(
+            &map.remote,
+            &rsync_target,
+            pocketbase,
+            &remote_child(&remote_child(&map.remote.tmp_dir, "sync"), &pocketbase.name),
+        ));
+    }
     commands.push(rsync_command(
         &map.remote,
         &rsync_target,
@@ -175,6 +185,22 @@ fn rsync_command(
         .arg(format!("{remote_target}:{remote_destination}"))
 }
 
+fn pocketbase_rsync_command(
+    remote: &RemoteConfig,
+    remote_target: &str,
+    pocketbase: &ResolvedPocketBase,
+    remote_destination: &str,
+) -> ProcessCommand {
+    ProcessCommand::new(remote.rsync_program.as_str())
+        .arg("-az")
+        .arg("--delete")
+        .arg("--exclude")
+        .arg("pb_data/")
+        .arg("-e")
+        .arg(ssh_transport(remote))
+        .arg(rsync_source(&pocketbase.source_path, true))
+        .arg(format!("{remote_target}:{remote_destination}"))
+}
 fn ssh_command(remote: &RemoteConfig, remote_target: &str, script: &str) -> ProcessCommand {
     ProcessCommand::new(remote.ssh_program.as_str())
         .args(ssh_args(remote))
@@ -292,6 +318,9 @@ fn install_script(map: &ServiceMap) -> String {
         append_service_install_sync(&mut script, service);
     }
 
+    if let Some(pocketbase) = &map.pocketbase {
+        append_pocketbase_install_sync(&mut script, pocketbase);
+    }
     script.push_str("caddy_changed=0\n");
     script.push_str(
         "if [ ! -f \"$caddyfile_path\" ] || ! cmp -s \"$caddy_tmp\" \"$caddyfile_path\"; then\n",
@@ -315,6 +344,9 @@ fn install_script(map: &ServiceMap) -> String {
         }
     }
 
+    if let Some(pocketbase) = &map.pocketbase {
+        append_systemd_unit_install(&mut script, &pocketbase.service_name);
+    }
     script.push_str("for unit_path in \"$systemd_dir\"/\"$managed_prefix\"*.service; do\n");
     script.push_str("    [ -e \"$unit_path\" ] || continue\n");
     script.push_str("    unit=\"$(basename \"$unit_path\")\"\n");
@@ -337,6 +369,19 @@ fn install_script(map: &ServiceMap) -> String {
     script
 }
 
+fn append_systemd_unit_install(script: &mut String, service_name: &str) {
+    script.push_str("unit=");
+    script.push_str(&sh_quote(service_name));
+    script.push('\n');
+    script.push_str("source_unit=\"$systemd_tmp/$unit\"\n");
+    script.push_str("target_unit=\"$systemd_dir/$unit\"\n");
+    script.push_str(
+        "if [ ! -f \"$target_unit\" ] || ! cmp -s \"$source_unit\" \"$target_unit\"; then\n",
+    );
+    script.push_str("    install -m 0644 \"$source_unit\" \"$target_unit\"\n");
+    script.push_str("    systemd_changed=1\n");
+    script.push_str("fi\n");
+}
 fn append_service_install_sync(script: &mut String, service: &ResolvedService) {
     script.push_str("mkdir -p ");
     script.push_str(&sh_quote(&service.remote_path));
@@ -350,6 +395,26 @@ fn append_service_install_sync(script: &mut String, service: &ResolvedService) {
     script.push('\n');
 }
 
+fn append_pocketbase_install_sync(script: &mut String, pocketbase: &ResolvedPocketBase) {
+    script.push_str("mkdir -p ");
+    script.push_str(&sh_quote(&pocketbase.remote_path));
+    script.push(' ');
+    script.push_str(&sh_quote(&pocketbase.data_dir));
+
+    if let Some(backup_dir) = &pocketbase.backup_dir {
+        script.push(' ');
+        script.push_str(&sh_quote(backup_dir));
+    }
+
+    script.push('\n');
+    script.push_str("rsync -a --delete --exclude pb_data/ ");
+    script.push_str("\"$sync_dir/");
+    script.push_str(&pocketbase.name);
+    script.push_str("/\"");
+    script.push(' ');
+    script.push_str(&sh_quote(&remote_child(&pocketbase.remote_path, "")));
+    script.push('\n');
+}
 fn sh_quote(value: &str) -> String {
     if value.is_empty() {
         return "''".to_string();
@@ -376,8 +441,11 @@ mod tests {
     fn deploy_plan_builds_before_service_rsync() {
         let fixture = DeployFixture::new();
         let map = fixture.map();
-        let plan = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
-            .expect("deployment plan");
+        let plan = build_deployment_command_list_for_output_dir(
+            &map,
+            &fixture.dir.path().join("rendered"),
+        )
+        .expect("deployment plan");
         let displays = plan
             .commands
             .iter()
@@ -425,8 +493,11 @@ commands = [
 "#,
         );
         let map = fixture.map();
-        let plan = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
-            .expect("deployment plan");
+        let plan = build_deployment_command_list_for_output_dir(
+            &map,
+            &fixture.dir.path().join("rendered"),
+        )
+        .expect("deployment plan");
         let displays = plan
             .commands
             .iter()
@@ -454,8 +525,11 @@ commands = [
     fn deploy_plan_validates_caddy_before_remote_install_script() {
         let fixture = DeployFixture::new();
         let map = fixture.map();
-        let plan = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
-            .expect("deployment plan");
+        let plan = build_deployment_command_list_for_output_dir(
+            &map,
+            &fixture.dir.path().join("rendered"),
+        )
+        .expect("deployment plan");
         let displays = plan
             .commands
             .iter()
@@ -478,8 +552,11 @@ commands = [
     fn remote_install_restarts_deno_services_after_sync() {
         let fixture = DeployFixture::new();
         let map = fixture.map();
-        let plan = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
-            .expect("deployment plan");
+        let plan = build_deployment_command_list_for_output_dir(
+            &map,
+            &fixture.dir.path().join("rendered"),
+        )
+        .expect("deployment plan");
         let install_script = plan
             .commands
             .last()
@@ -502,8 +579,11 @@ commands = [
     fn dry_run_executor_records_commands_without_contacting_remote() {
         let fixture = DeployFixture::new();
         let map = fixture.map();
-        let plan = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
-            .expect("deployment plan");
+        let plan = build_deployment_command_list_for_output_dir(
+            &map,
+            &fixture.dir.path().join("rendered"),
+        )
+        .expect("deployment plan");
         let runner = RecordingRunner::default();
 
         for command in &plan.commands {
@@ -521,11 +601,82 @@ commands = [
     }
 
     #[test]
+    fn deployment_plan_syncs_pocketbase_without_data_dir() {
+        let fixture = DeployFixture::with_config(
+            r#"
+manifest_version = 1
+
+[remote]
+host = "vaie.art"
+user = "root"
+
+[caddy]
+primary_host = "vaie.art"
+
+[pocketbase]
+name = "site-pocketbase"
+host = "pb.vaie.art"
+source_path = "src/pocketbase"
+remote_path = "/srv/vaieart-pocketbase"
+data_dir = "/var/lib/vaieart-pocketbase/pb_data"
+backup_dir = "/var/backups/vaieart-pocketbase"
+port = 8090
+
+[[services]]
+name = "pudle"
+kind = "static_site"
+local_path = "src/submodules/pudle"
+remote_path = "/web/pudle"
+sync_source = "build"
+route_path = "/pudle"
+"#,
+        );
+        let map = fixture.map();
+        let plan = build_deployment_command_list_for_output_dir(
+            &map,
+            &fixture.dir.path().join("rendered"),
+        )
+        .expect("deployment plan");
+        let displays = plan
+            .commands
+            .iter()
+            .map(ProcessCommand::display)
+            .collect::<Vec<_>>();
+        let pocketbase_rsync = displays
+            .iter()
+            .find(|command| {
+                command.contains("rsync")
+                    && command.contains("--exclude pb_data/")
+                    && command.contains("site-pocketbase")
+            })
+            .expect("pocketbase rsync command");
+        let install_script = plan
+            .commands
+            .last()
+            .expect("install command")
+            .args
+            .last()
+            .expect("install script");
+
+        assert!(pocketbase_rsync.contains("src/pocketbase/"));
+        assert!(install_script.contains(
+            "mkdir -p /srv/vaieart-pocketbase /var/lib/vaieart-pocketbase/pb_data /var/backups/vaieart-pocketbase",
+        ));
+        assert!(install_script.contains(
+            "rsync -a --delete --exclude pb_data/ \"$sync_dir/site-pocketbase/\" /srv/vaieart-pocketbase/",
+        ));
+        assert!(install_script.contains("vaieart-site-pocketbase.service"));
+    }
+
+    #[test]
     fn deployment_plan_requires_remote_host() {
         let fixture = DeployFixture::new_without_remote_host();
         let map = fixture.map();
-        let error = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
-            .expect_err("deployment plan should require remote host");
+        let error = build_deployment_command_list_for_output_dir(
+            &map,
+            &fixture.dir.path().join("rendered"),
+        )
+        .expect_err("deployment plan should require remote host");
 
         assert!(error.to_string().contains("remote.host is required"));
     }
@@ -589,8 +740,11 @@ route_path = "/pudle"
 "#,
         );
         let map = fixture.map();
-        let plan = build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
-            .expect("deployment plan");
+        let plan = build_deployment_command_list_for_output_dir(
+            &map,
+            &fixture.dir.path().join("rendered"),
+        )
+        .expect("deployment plan");
         let ssh_command = plan
             .commands
             .iter()
@@ -671,6 +825,7 @@ route_path = "/pudle"
 
         fn with_config(source: &str) -> Self {
             let dir = TempDir::new().expect("temp dir");
+            fs::create_dir_all(dir.path().join("src/pocketbase/pb_migrations")).expect("pb dir");
             fs::create_dir_all(dir.path().join("src/submodules/pudle/build")).expect("build dir");
             let config_path = dir.path().join("services.toml");
             fs::write(&config_path, source).expect("write config");

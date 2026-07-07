@@ -12,7 +12,7 @@ pub fn update_repositories(map: &ServiceMap, runner: &dyn CommandRunner) -> Resu
         "git is required for `update`; install it in the same environment that runs cargo",
     )?;
 
-    for path in unique_repo_paths(map) {
+    for path in unique_repo_roots(map, runner)? {
         println!("\x1b[35mupdating {} :: \x1b[0m", path.display());
         io::stdout()
             .flush()
@@ -27,55 +27,16 @@ pub fn update_repositories(map: &ServiceMap, runner: &dyn CommandRunner) -> Resu
 
 fn update_repository(path: &Path, runner: &dyn CommandRunner) -> Result<()> {
     runner.run(&git_command(path).arg("fetch").arg("--all").arg("--prune"))?;
-
-    let target = pull_target(path, runner)?;
-    runner.run(&pull_command(path, target))?;
-    ensure_no_unmerged_files(path, runner)?;
+    runner.run(&reset_origin_head_command(path))?;
 
     Ok(())
 }
 
-fn ensure_no_unmerged_files(path: &Path, runner: &dyn CommandRunner) -> Result<()> {
-    let files = runner.output(
-        &git_command(path)
-            .arg("diff")
-            .arg("--name-only")
-            .arg("--diff-filter")
-            .arg("U"),
-    )?;
-    let files = files.trim();
-
-    if files.is_empty() {
-        return Ok(());
-    }
-
-    bail!(
-        "autostash conflicted while updating `{}`; resolve unmerged files:\n{}",
-        path.display(),
-        files,
-    );
-}
-
-fn pull_target(path: &Path, runner: &dyn CommandRunner) -> Result<PullTarget> {
-    let branch = runner.output(&git_command(path).arg("branch").arg("--show-current"))?;
-
-    if branch.trim().is_empty() {
-        return Ok(PullTarget::OriginHead);
-    }
-
-    Ok(PullTarget::ConfiguredUpstream)
-}
-
-fn pull_command(path: &Path, target: PullTarget) -> ProcessCommand {
-    let command = git_command(path)
-        .arg("pull")
-        .arg("--ff-only")
-        .arg("--autostash");
-
-    match target {
-        PullTarget::ConfiguredUpstream => command,
-        PullTarget::OriginHead => command.arg("origin").arg("HEAD"),
-    }
+fn reset_origin_head_command(path: &Path) -> ProcessCommand {
+    git_command(path)
+        .arg("reset")
+        .arg("--hard")
+        .arg("origin/HEAD")
 }
 
 fn git_command(path: &Path) -> ProcessCommand {
@@ -84,34 +45,62 @@ fn git_command(path: &Path) -> ProcessCommand {
         .arg(path.display().to_string())
 }
 
-fn unique_repo_paths(map: &ServiceMap) -> Vec<PathBuf> {
-    let mut seen = BTreeSet::new();
-    let mut paths = Vec::new();
+fn unique_repo_roots(map: &ServiceMap, runner: &dyn CommandRunner) -> Result<Vec<PathBuf>> {
+    let mut paths = map
+        .services
+        .iter()
+        .map(|service| service.local_path.as_path())
+        .collect::<Vec<_>>();
 
-    for service in &map.services {
-        if seen.insert(service.local_path.clone()) {
-            paths.push(service.local_path.clone());
+    if let Some(pocketbase) = &map.pocketbase {
+        paths.push(pocketbase.source_path.as_path());
+    }
+
+    unique_roots_for_paths(paths, runner)
+}
+
+fn unique_roots_for_paths<'a>(
+    paths: impl IntoIterator<Item = &'a Path>,
+    runner: &dyn CommandRunner,
+) -> Result<Vec<PathBuf>> {
+    let mut seen = BTreeSet::new();
+    let mut roots = Vec::new();
+
+    for path in paths {
+        let root = repo_root_for_path(path, runner)
+            .with_context(|| format!("failed to find git repository for `{}`", path.display()))?;
+
+        if seen.insert(root.clone()) {
+            roots.push(root);
         }
     }
 
-    paths
+    Ok(roots)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PullTarget {
-    ConfiguredUpstream,
-    OriginHead,
+fn repo_root_for_path(path: &Path, runner: &dyn CommandRunner) -> Result<PathBuf> {
+    let root = runner.output(&git_command(path).arg("rev-parse").arg("--show-toplevel"))?;
+    let root = root.trim();
+
+    if root.is_empty() {
+        bail!("git repository root was empty for `{}`", path.display());
+    }
+
+    Ok(PathBuf::from(root))
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::config::{
+        CaddyConfig, RemoteConfig, ResolvedPocketBase, ResolvedService, ResolvedServiceKind,
+    };
     use super::*;
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
     #[test]
-    fn branch_repository_pulls_configured_upstream() {
-        let runner = RecordingRunner::with_outputs(["main\n", ""]);
+    fn repository_resets_to_origin_head() {
+        let runner = RecordingRunner::new();
 
         update_repository(Path::new("repo"), &runner).expect("update repo");
 
@@ -119,52 +108,151 @@ mod tests {
             runner.displays(),
             vec![
                 "git -C repo fetch --all --prune",
-                "git -C repo branch --show-current",
-                "git -C repo pull --ff-only --autostash",
-                "git -C repo diff --name-only --diff-filter U",
+                "git -C repo reset --hard origin/HEAD",
             ],
         );
     }
 
     #[test]
-    fn detached_repository_pulls_origin_head() {
-        let runner = RecordingRunner::with_outputs(["\n", ""]);
+    fn reset_origin_head_command_matches_manual_update() {
+        assert_eq!(
+            reset_origin_head_command(Path::new("repo")).display(),
+            "git -C repo reset --hard origin/HEAD",
+        );
+    }
 
-        update_repository(Path::new("repo"), &runner).expect("update repo");
+    #[test]
+    fn service_paths_resolve_to_unique_repo_roots() {
+        let runner = RecordingRunner::with_outputs(["repo\n", "repo\n", "other\n"]);
 
+        let roots = unique_roots_for_paths(
+            [
+                Path::new("repo/web"),
+                Path::new("repo"),
+                Path::new("other/app"),
+            ],
+            &runner,
+        )
+        .expect("repo roots");
+
+        assert_eq!(roots, vec![PathBuf::from("repo"), PathBuf::from("other")]);
         assert_eq!(
             runner.displays(),
             vec![
-                "git -C repo fetch --all --prune",
-                "git -C repo branch --show-current",
-                "git -C repo pull --ff-only --autostash origin HEAD",
-                "git -C repo diff --name-only --diff-filter U",
+                "git -C repo/web rev-parse --show-toplevel",
+                "git -C repo rev-parse --show-toplevel",
+                "git -C other/app rev-parse --show-toplevel",
             ],
         );
     }
 
     #[test]
-    fn autostash_conflicts_report_unmerged_files() {
-        let runner = RecordingRunner::with_outputs(["\n", "file.txt\nother.txt\n"]);
-        let error = update_repository(Path::new("repo"), &runner)
-            .expect_err("autostash conflict should fail update");
-        let message = error.to_string();
+    fn update_repository_does_not_need_captured_output() {
+        let runner = RecordingRunner::new();
 
-        assert!(message.contains("autostash conflicted"));
-        assert!(message.contains("file.txt"));
-        assert!(message.contains("other.txt"));
+        update_repository(Path::new("repo"), &runner).expect("update repo");
+        assert_eq!(runner.outputs_requested(), 0);
     }
 
+    #[test]
+    fn pocketbase_source_path_resolves_to_repo_root() {
+        let map = service_map(["service/web"], Some("pb.vaie.art"));
+        let runner = RecordingRunner::with_outputs(["service\n", "pb.vaie.art\n"]);
+
+        let roots = unique_repo_roots(&map, &runner).expect("repo roots");
+
+        assert_eq!(
+            roots,
+            vec![PathBuf::from("service"), PathBuf::from("pb.vaie.art")],
+        );
+        assert_eq!(
+            runner.displays(),
+            vec![
+                "git -C service/web rev-parse --show-toplevel",
+                "git -C pb.vaie.art rev-parse --show-toplevel",
+            ],
+        );
+    }
+
+    fn service_map<const N: usize>(
+        service_paths: [&str; N],
+        pocketbase_path: Option<&str>,
+    ) -> ServiceMap {
+        ServiceMap {
+            root: PathBuf::from("."),
+            remote: remote_config(),
+            caddy: CaddyConfig {
+                primary_host: "vaie.art".to_string(),
+                www_redirect_host: None,
+            },
+            pocketbase: pocketbase_path.map(pocketbase_source),
+            services: service_paths.into_iter().map(static_service).collect(),
+        }
+    }
+
+    fn remote_config() -> RemoteConfig {
+        RemoteConfig {
+            host: None,
+            user: None,
+            port: 22,
+            identity_file: None,
+            extra_ssh_args: Vec::new(),
+            ssh_program: "ssh".to_string(),
+            rsync_program: "rsync".to_string(),
+            tmp_dir: "/tmp/vaieart-services".to_string(),
+            caddyfile_path: "/etc/caddy/Caddyfile".to_string(),
+            systemd_dir: "/etc/systemd/system".to_string(),
+            managed_prefix: "vaieart-".to_string(),
+            deno_bin: "deno".to_string(),
+        }
+    }
+
+    fn static_service(path: &str) -> ResolvedService {
+        ResolvedService {
+            name: "service".to_string(),
+            kind: ResolvedServiceKind::StaticSite,
+            local_path: PathBuf::from(path),
+            remote_path: "/srv/service".to_string(),
+            sync_source: PathBuf::from("."),
+            host: "vaie.art".to_string(),
+            route_path: "/".to_string(),
+            build: None,
+        }
+    }
+
+    fn pocketbase_source(path: &str) -> ResolvedPocketBase {
+        ResolvedPocketBase {
+            name: "pb".to_string(),
+            host: "pb.vaie.art".to_string(),
+            source_path: PathBuf::from(path),
+            remote_path: "/srv/vaieart-pocketbase".to_string(),
+            data_dir: "/var/lib/vaieart-pocketbase/pb_data".to_string(),
+            backup_dir: None,
+            port: 8090,
+            binary: "/opt/pocketbase/pocketbase".to_string(),
+            service_name: "vaieart-pb.service".to_string(),
+            environment_file: None,
+            request_body_max_size: "25MB".to_string(),
+            read_timeout: "360s".to_string(),
+            encryption_env: None,
+        }
+    }
     struct RecordingRunner {
         commands: RefCell<Vec<ProcessCommand>>,
         outputs: RefCell<VecDeque<String>>,
+        outputs_requested: RefCell<usize>,
     }
 
     impl RecordingRunner {
+        fn new() -> Self {
+            Self::with_outputs([])
+        }
+
         fn with_outputs<const N: usize>(outputs: [&str; N]) -> Self {
             Self {
                 commands: RefCell::new(Vec::new()),
                 outputs: RefCell::new(outputs.into_iter().map(str::to_string).collect()),
+                outputs_requested: RefCell::new(0),
             }
         }
 
@@ -174,6 +262,10 @@ mod tests {
                 .iter()
                 .map(ProcessCommand::display)
                 .collect()
+        }
+
+        fn outputs_requested(&self) -> usize {
+            *self.outputs_requested.borrow()
         }
     }
 
@@ -185,6 +277,7 @@ mod tests {
 
         fn output(&self, command: &ProcessCommand) -> Result<String> {
             self.commands.borrow_mut().push(command.clone());
+            *self.outputs_requested.borrow_mut() += 1;
             self.outputs
                 .borrow_mut()
                 .pop_front()

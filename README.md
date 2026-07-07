@@ -33,7 +33,7 @@ Outside of work this repository does, you will still need to manually consider:
 
 ## Commands
 - `check`: validate config, local repo paths, PocketBase paths, ports, routes, and generated templates
-- `update`: run `git fetch --all --prune`, then fast-forward each configured repo with `--autostash`. Branch checkouts pull their configured upstream; detached checkouts pull `origin HEAD`. If autostash conflicts, update reports the unmerged files
+- `update`: find the Git repo root for each configured source path, dedupe those repos, run `git fetch --all --prune`, then move each checkout to `origin/HEAD` with `git reset --hard origin/HEAD`. Untracked files are left alone
 - `render`: write generated artifacts to `target/vaieart-services/`
 - `plan`: print the deployment command sequence without running it
 - `deploy`: render artifacts, run local build commands, upload with `rsync`, validate Caddy, and apply changes over SSH.

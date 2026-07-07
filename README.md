@@ -31,7 +31,11 @@ Outside of work this repository does, you will still need to manually consider:
 1. `cargo run -- plan` to view the remote build, rsync, validation, and install commands
 1. `cargo run -- deploy` to build configured repositories, rsync files to a remote temp directory, validate Caddy, remove stale artifacts and config files on the server, and restart changed services
 
+Shorthand:
+1. `cargo run` to update repositories, render artifacts, and deploy
+
 ## Commands
+- No command: update repositories, render artifacts, and deploy
 - `check`: validate config, local repo paths, PocketBase paths, ports, routes, and generated templates
 - `update`: find the Git repo root for each configured source path, dedupe those repos, run `git fetch --all --prune`, then move each checkout to `origin/HEAD` with `git reset --hard origin/HEAD`. Untracked files are left alone
 - `render`: write generated artifacts to `target/vaieart-services/`

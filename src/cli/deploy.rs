@@ -29,7 +29,26 @@ pub fn deploy(map: &ServiceMap, output_dir: &Path, runner: &dyn CommandRunner) -
     ensure_deploy_programs_available(map)?;
 
     let rendered_paths = write_artifacts(map, output_dir)?;
-    let plan = build_deployment_command_list(map, &rendered_paths)?;
+
+    run_deployment_commands(map, &rendered_paths, runner)
+}
+
+pub(super) fn deploy_rendered(
+    map: &ServiceMap,
+    rendered_paths: &RenderedPaths,
+    runner: &dyn CommandRunner,
+) -> Result<()> {
+    ensure_deploy_programs_available(map)?;
+
+    run_deployment_commands(map, rendered_paths, runner)
+}
+
+fn run_deployment_commands(
+    map: &ServiceMap,
+    rendered_paths: &RenderedPaths,
+    runner: &dyn CommandRunner,
+) -> Result<()> {
+    let plan = build_deployment_command_list(map, rendered_paths)?;
 
     for command in &plan.commands {
         runner.run(command)?;

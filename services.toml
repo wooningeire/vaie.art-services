@@ -23,16 +23,14 @@ www_redirect_host = "www.vaie.art"
 
 
 [pocketbase]
-name = "site-pocketbase"
+name = "pb"
 host = "pb.vaie.art"
 source_path = "src/submodules/pb.vaie.art"
 remote_path = "/srv/vaieart-pocketbase"
 data_dir = "/var/lib/vaieart-pocketbase/pb_data"
 backup_dir = "/var/backups/vaieart-pocketbase"
 port = 8090
-binary = "/usr/local/bin/pocketbase"
-environment_file = "/etc/vaieart/pocketbase.env"
-encryption_env = "PB_ENCRYPTION_KEY"
+binary = "/opt/pocketbase/pocketbase"
 request_body_max_size = "25MB"
 read_timeout = "360s"
 
@@ -89,13 +87,12 @@ commands = [
 [[services]]
 name = "dragonscaler"
 kind = "deno_app"
-host = "dragonscaler.vaie.art"
-local_path = "../dragonscaler"
+local_path = "src/submodules/dragonscaler"
 remote_path = "/srv/dragonscaler"
 port = 3002
 sync_source = "build"
 entrypoint = "index.js"
-route_path = "/"
+route_path = "/dragonscaler"
 
 [services.environment]
 PUBLIC__POCKETBASE_URL = "https://pb.vaie.art"

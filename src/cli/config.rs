@@ -535,6 +535,12 @@ fn resolve_pocketbase(
         validate_environment_key("pocketbase.encryption_env", encryption_env)?;
     }
 
+    if pocketbase.encryption_env.is_some() && pocketbase.environment_file.is_none() {
+        bail!(
+            "pocketbase.encryption_env requires pocketbase.environment_file so systemd can load the secret"
+        );
+    }
+
     Ok(ResolvedPocketBase {
         name: pocketbase.name,
         host: pocketbase.host,
@@ -914,6 +920,46 @@ route_path = "/pudle"
             vec!["vaieart-site-pocketbase.service"],
         );
     }
+
+    #[test]
+    fn pocketbase_encryption_env_requires_environment_file() {
+        let fixture = ConfigFixture::new();
+        let error = fixture.load_error(
+            r#"
+manifest_version = 1
+
+[remote]
+host = "vaie.art"
+user = "root"
+
+[caddy]
+primary_host = "vaie.art"
+
+[pocketbase]
+name = "site-pocketbase"
+host = "pb.vaie.art"
+source_path = "src/pocketbase"
+remote_path = "/srv/vaieart-pocketbase"
+data_dir = "/var/lib/vaieart-pocketbase/pb_data"
+port = 8090
+encryption_env = "PB_ENCRYPTION_KEY"
+
+[[services]]
+name = "pudle"
+kind = "static_site"
+local_path = "src/submodules/pudle"
+remote_path = "/web/pudle"
+route_path = "/pudle"
+"#,
+        );
+
+        assert!(
+            error
+                .to_string()
+                .contains("pocketbase.encryption_env requires")
+        );
+    }
+
     #[test]
     fn duplicate_ports_are_rejected() {
         let fixture = ConfigFixture::new();

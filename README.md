@@ -48,7 +48,7 @@ Remote hosts must already have
 1. `caddy`
 1. `systemd`
 1. Deno at the location specified by `remote.deno_bin`
-1. PocketBase at `/usr/local/bin/pocketbase`, `/etc/vaieart/pocketbase.env`
+1. PocketBase at the configured `pocketbase.binary` path, currently `/opt/pocketbase/pocketbase`
 1. ... any non-Deno service binaries configured in `services.toml`
 
 Windows: consider using WSL with one of the below distros

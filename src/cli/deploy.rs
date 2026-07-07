@@ -48,15 +48,22 @@ pub fn build_deployment_command_list(
     let ssh_target = remote_ssh_target(&map.remote)?;
     let rsync_target = remote_rsync_target(&map.remote)?;
 
+    let mut prepare_remote_script = format!(
+        "set -eu\nmkdir -p {} {} {}",
+        sh_quote(&remote_child(&map.remote.tmp_dir, "sync")),
+        sh_quote(&remote_child(&map.remote.tmp_dir, "systemd")),
+        sh_quote(&remote_child(&map.remote.tmp_dir, "backups")),
+    );
+
+    if let Some(pocketbase) = &map.pocketbase {
+        prepare_remote_script.push('\n');
+        append_pocketbase_preflight(&mut prepare_remote_script, pocketbase);
+    }
+
     commands.push(ssh_command(
         &map.remote,
         &ssh_target,
-        &format!(
-            "mkdir -p {} {} {}",
-            sh_quote(&remote_child(&map.remote.tmp_dir, "sync")),
-            sh_quote(&remote_child(&map.remote.tmp_dir, "systemd")),
-            sh_quote(&remote_child(&map.remote.tmp_dir, "backups")),
-        ),
+        &prepare_remote_script,
     ));
 
     for service in &map.services {
@@ -306,6 +313,12 @@ fn install_script(map: &ServiceMap) -> String {
     script.push_str("expected_units=");
     script.push_str(&sh_quote(&expected_units));
     script.push('\n');
+    script.push_str("report_systemctl_failure() {\n");
+    script.push_str("    failed_unit=\"$1\"\n");
+    script.push_str("    echo \"systemd failed for $failed_unit\" >&2\n");
+    script.push_str("    systemctl status \"$failed_unit\" --no-pager --lines=80 || true\n");
+    script.push_str("    journalctl -u \"$failed_unit\" --no-pager --lines=120 || true\n");
+    script.push_str("}\n");
     script.push_str("backup_dir=\"$tmp_dir/backups/$(date +%Y%m%d%H%M%S)\"\n");
     script.push_str("mkdir -p \"$backup_dir/systemd\"\n");
     script.push_str("if [ -f \"$caddyfile_path\" ]; then cp \"$caddyfile_path\" \"$backup_dir/Caddyfile\"; fi\n");
@@ -313,6 +326,10 @@ fn install_script(map: &ServiceMap) -> String {
     script.push_str("    [ -e \"$unit_path\" ] || continue\n");
     script.push_str("    cp \"$unit_path\" \"$backup_dir/systemd/\" || true\n");
     script.push_str("done\n");
+
+    if let Some(pocketbase) = &map.pocketbase {
+        append_pocketbase_preflight(&mut script, pocketbase);
+    }
 
     for service in &map.services {
         append_service_install_sync(&mut script, service);
@@ -361,12 +378,79 @@ fn install_script(map: &ServiceMap) -> String {
     script.push_str("    esac\n");
     script.push_str("done\n");
     script.push_str("if [ \"$systemd_changed\" -eq 1 ]; then systemctl daemon-reload; fi\n");
-    script.push_str("for unit in $expected_units; do systemctl enable --now \"$unit\"; done\n");
+    script.push_str("for unit in $expected_units; do\n");
+    script.push_str("    if ! systemctl enable --now \"$unit\"; then\n");
+    script.push_str("        report_systemctl_failure \"$unit\"\n");
+    script.push_str("        exit 1\n");
+    script.push_str("    fi\n");
+    script.push_str("done\n");
     script.push_str("# Artifact syncs can change server code without changing the systemd unit.\n");
-    script.push_str("for unit in $expected_units; do systemctl restart \"$unit\"; done\n");
+    script.push_str("for unit in $expected_units; do\n");
+    script.push_str("    if ! systemctl restart \"$unit\"; then\n");
+    script.push_str("        report_systemctl_failure \"$unit\"\n");
+    script.push_str("        exit 1\n");
+    script.push_str("    fi\n");
+    script.push_str("done\n");
     script.push_str("if [ \"$caddy_changed\" -eq 1 ]; then systemctl reload caddy || systemctl restart caddy; fi\n");
 
     script
+}
+
+fn append_pocketbase_preflight(script: &mut String, pocketbase: &ResolvedPocketBase) {
+    script.push_str("if [ ! -x ");
+    script.push_str(&sh_quote(&pocketbase.binary));
+    script.push_str(" ]; then\n");
+    script.push_str("    echo ");
+    script.push_str(&sh_quote(&format!(
+        "missing PocketBase binary: {}",
+        pocketbase.binary,
+    )));
+    script.push_str(" >&2\n");
+    script.push_str("    echo ");
+    script.push_str(&sh_quote(
+        "install PocketBase on the remote or update pocketbase.binary in services.toml",
+    ));
+    script.push_str(" >&2\n");
+    script.push_str("    exit 1\n");
+    script.push_str("fi\n");
+
+    if let Some(environment_file) = &pocketbase.environment_file {
+        script.push_str("if [ ! -f ");
+        script.push_str(&sh_quote(environment_file));
+        script.push_str(" ]; then\n");
+        script.push_str("    echo ");
+        script.push_str(&sh_quote(&format!(
+            "missing PocketBase environment file: {}",
+            environment_file,
+        )));
+        script.push_str(" >&2\n");
+        script.push_str("    echo ");
+        script.push_str(&sh_quote(
+            "create it on the remote; it holds secrets and is not deployed from this repo",
+        ));
+        script.push_str(" >&2\n");
+        script.push_str("    exit 1\n");
+        script.push_str("fi\n");
+
+        if let Some(encryption_env) = &pocketbase.encryption_env {
+            script.push_str("if ! grep -Eq ");
+            script.push_str(&sh_quote(&format!(
+                "^[[:space:]]*{}[[:space:]]*=",
+                encryption_env,
+            )));
+            script.push(' ');
+            script.push_str(&sh_quote(environment_file));
+            script.push_str("; then\n");
+            script.push_str("    echo ");
+            script.push_str(&sh_quote(&format!(
+                "PocketBase environment file does not define {}: {}",
+                encryption_env, environment_file,
+            )));
+            script.push_str(" >&2\n");
+            script.push_str("    exit 1\n");
+            script.push_str("fi\n");
+        }
+    }
 }
 
 fn append_systemd_unit_install(script: &mut String, service_name: &str) {
@@ -568,11 +652,81 @@ commands = [
         assert!(install_script.contains(
             "# Artifact syncs can change server code without changing the systemd unit.",
         ));
+        assert!(install_script.contains("if ! systemctl restart \"$unit\"; then"));
+        assert!(install_script.contains("report_systemctl_failure \"$unit\""));
+        assert!(install_script.contains("journalctl -u \"$failed_unit\" --no-pager --lines=120"));
+        assert!(!install_script.contains("changed_units"));
+    }
+
+    #[test]
+    fn deployment_plan_preflights_pocketbase_runtime_inputs() {
+        let fixture = DeployFixture::with_config(
+            r#"
+manifest_version = 1
+
+[remote]
+host = "vaie.art"
+user = "root"
+
+[caddy]
+primary_host = "vaie.art"
+
+[pocketbase]
+name = "site-pocketbase"
+host = "pb.vaie.art"
+source_path = "src/pocketbase"
+remote_path = "/srv/vaieart-pocketbase"
+data_dir = "/var/lib/vaieart-pocketbase/pb_data"
+backup_dir = "/var/backups/vaieart-pocketbase"
+port = 8090
+binary = "/opt/pocketbase/pocketbase"
+environment_file = "/etc/vaieart/pocketbase.env"
+encryption_env = "PB_ENCRYPTION_KEY"
+
+[[services]]
+name = "pudle"
+kind = "static_site"
+local_path = "src/submodules/pudle"
+remote_path = "/web/pudle"
+sync_source = "build"
+route_path = "/pudle"
+"#,
+        );
+        let map = fixture.map();
+        let plan = build_deployment_command_list_for_output_dir(
+            &map,
+            &fixture.dir.path().join("rendered"),
+        )
+        .expect("deployment plan");
+        let prepare_script = plan
+            .commands
+            .first()
+            .expect("prepare command")
+            .args
+            .last()
+            .expect("prepare script");
+        let install_script = plan
+            .commands
+            .last()
+            .expect("install command")
+            .args
+            .last()
+            .expect("install script");
+
+        assert!(prepare_script.contains("if [ ! -x /opt/pocketbase/pocketbase ]; then"));
+        assert!(install_script.contains("if [ ! -x /opt/pocketbase/pocketbase ]; then"));
+        assert!(install_script.contains("missing PocketBase binary: /opt/pocketbase/pocketbase"));
+        assert!(install_script.contains("if [ ! -f /etc/vaieart/pocketbase.env ]; then"));
         assert!(
             install_script
-                .contains("for unit in $expected_units; do systemctl restart \"$unit\"; done")
+                .contains("missing PocketBase environment file: /etc/vaieart/pocketbase.env")
         );
-        assert!(!install_script.contains("changed_units"));
+        assert!(install_script.contains(
+            "grep -Eq '^[[:space:]]*PB_ENCRYPTION_KEY[[:space:]]*=' /etc/vaieart/pocketbase.env",
+        ));
+        assert!(install_script.contains(
+            "PocketBase environment file does not define PB_ENCRYPTION_KEY: /etc/vaieart/pocketbase.env",
+        ));
     }
 
     #[test]

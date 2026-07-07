@@ -730,7 +730,7 @@ route_path = "/pudle"
     }
 
     #[test]
-    fn dry_run_executor_records_commands_without_contacting_remote() {
+    fn recording_executor_records_commands_without_contacting_remote() {
         let fixture = DeployFixture::new();
         let map = fixture.map();
         let plan = build_deployment_command_list_for_output_dir(

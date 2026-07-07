@@ -37,7 +37,6 @@ Outside of work this repository does, you will still need to manually consider:
 - `render`: write generated artifacts to `target/vaieart-services/`
 - `plan`: print the deployment command sequence without running it
 - `deploy`: render artifacts, run local build commands, upload with `rsync`, validate Caddy, and apply changes over SSH.
-- `deploy --dry-run`: print the same command sequence as `plan`
 
 ## Dependencies
 CLI needs `git`, `ssh`, `rsync`, `cargo`

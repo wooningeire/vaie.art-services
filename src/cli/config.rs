@@ -16,7 +16,8 @@ use paths::local_config_path;
 
 pub use types::{
     BuildConfig, CaddyConfig, Config, PocketBaseConfig, RemoteConfig, ResolvedPocketBase,
-    ResolvedService, ResolvedServiceKind, ServiceConfig, ServiceKind, ServiceMap,
+    ResolvedService, ResolvedServiceKind, ResolvedWarpProxy, ServiceConfig, ServiceKind,
+    ServiceMap, WarpProxyConfig,
 };
 
 impl Config {

@@ -55,3 +55,15 @@ pub(super) fn default_pocketbase_request_body_max_size() -> String {
 pub(super) fn default_pocketbase_read_timeout() -> String {
     "360s".to_string()
 }
+
+pub(super) fn default_warp_proxy_port() -> u16 {
+    40000
+}
+
+pub(super) fn default_warp_cli() -> String {
+    "/usr/bin/warp-cli".to_string()
+}
+
+pub(super) fn default_warp_daemon_service() -> String {
+    "warp-svc.service".to_string()
+}

@@ -34,6 +34,9 @@ binary = "/opt/pocketbase/pocketbase"
 request_body_max_size = "25MB"
 read_timeout = "360s"
 
+[pocketbase.warp_proxy]
+port = 40000
+
 
 [[services]]
 name = "vaie.art"

@@ -3,6 +3,7 @@ use super::defaults::{
     default_pocketbase_binary, default_pocketbase_port, default_pocketbase_read_timeout,
     default_pocketbase_request_body_max_size, default_rsync_program, default_ssh_port,
     default_ssh_program, default_sync_source, default_systemd_dir, default_tmp_dir,
+    default_warp_cli, default_warp_daemon_service, default_warp_proxy_port,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -78,6 +79,18 @@ pub struct PocketBaseConfig {
     pub read_timeout: String,
     #[serde(default)]
     pub encryption_env: Option<String>,
+    #[serde(default)]
+    pub warp_proxy: Option<WarpProxyConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct WarpProxyConfig {
+    #[serde(default = "default_warp_proxy_port")]
+    pub port: u16,
+    #[serde(default = "default_warp_cli")]
+    pub cli: String,
+    #[serde(default = "default_warp_daemon_service")]
+    pub daemon_service: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -155,6 +168,15 @@ pub struct ResolvedPocketBase {
     pub request_body_max_size: String,
     pub read_timeout: String,
     pub encryption_env: Option<String>,
+    pub warp_proxy: Option<ResolvedWarpProxy>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedWarpProxy {
+    pub port: u16,
+    pub cli: String,
+    pub daemon_service: String,
+    pub service_name: String,
 }
 
 #[derive(Clone, Debug)]
@@ -197,6 +219,10 @@ impl ServiceMap {
             .collect::<Vec<_>>();
 
         if let Some(pocketbase) = &self.pocketbase {
+            if let Some(warp_proxy) = &pocketbase.warp_proxy {
+                service_names.push(warp_proxy.service_name.clone());
+            }
+
             service_names.push(pocketbase.service_name.clone());
         }
 

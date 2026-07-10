@@ -1,4 +1,6 @@
-use super::super::config::{ResolvedPocketBase, ResolvedService, ResolvedServiceKind, ServiceMap};
+use super::super::config::{
+    ResolvedPocketBase, ResolvedService, ResolvedServiceKind, ResolvedWarpProxy, ServiceMap,
+};
 use super::SystemdUnit;
 
 pub(super) fn render_systemd_unit(map: &ServiceMap, service: &ResolvedService) -> SystemdUnit {
@@ -55,14 +57,75 @@ pub(super) fn render_systemd_unit(map: &ServiceMap, service: &ResolvedService) -
     }
 }
 
+pub(super) fn render_warp_proxy_systemd_unit(
+    pocketbase: &ResolvedPocketBase,
+    warp_proxy: &ResolvedWarpProxy,
+) -> SystemdUnit {
+    let mut output = String::new();
+    output.push_str("[Unit]\n");
+    output.push_str("Description=vaie.art managed WARP proxy for PocketBase - ");
+    output.push_str(&pocketbase.name);
+    output.push('\n');
+    output.push_str("After=network-online.target ");
+    output.push_str(&warp_proxy.daemon_service);
+    output.push('\n');
+    output.push_str("Wants=network-online.target\n");
+    output.push_str("Requires=");
+    output.push_str(&warp_proxy.daemon_service);
+    output.push('\n');
+    output.push_str("Before=");
+    output.push_str(&pocketbase.service_name);
+    output.push_str("\n\n");
+    output.push_str("[Service]\n");
+    output.push_str("Type=oneshot\n");
+    output.push_str("RemainAfterExit=yes\n");
+    output.push_str("ExecStart=");
+    output.push_str(&warp_proxy.cli);
+    output.push_str(" tunnel protocol set MASQUE\n");
+    output.push_str("ExecStart=");
+    output.push_str(&warp_proxy.cli);
+    output.push_str(" mode proxy\n");
+    output.push_str("ExecStart=");
+    output.push_str(&warp_proxy.cli);
+    output.push_str(" proxy port ");
+    output.push_str(&warp_proxy.port.to_string());
+    output.push('\n');
+    output.push_str("ExecStart=");
+    output.push_str(&warp_proxy.cli);
+    output.push_str(" connect\n");
+    output.push_str("ExecStart=/usr/bin/curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 1 --retry-max-time 60 --connect-timeout 3 --max-time 8 --proxy ");
+    output.push_str(&warp_proxy_url(warp_proxy.port));
+    output.push_str(" https://discord.com/api/v10/gateway\n");
+    output.push_str("TimeoutStartSec=120\n\n");
+    output.push_str("[Install]\n");
+    output.push_str("WantedBy=multi-user.target\n");
+
+    SystemdUnit {
+        name: warp_proxy.service_name.clone(),
+        content: output,
+    }
+}
+
 pub(super) fn render_pocketbase_systemd_unit(pocketbase: &ResolvedPocketBase) -> SystemdUnit {
     let mut output = String::new();
     output.push_str("[Unit]\n");
     output.push_str("Description=vaie.art managed PocketBase service - ");
     output.push_str(&pocketbase.name);
     output.push('\n');
-    output.push_str("After=network-online.target\n");
-    output.push_str("Wants=network-online.target\n\n");
+
+    if let Some(warp_proxy) = &pocketbase.warp_proxy {
+        output.push_str("After=network-online.target ");
+        output.push_str(&warp_proxy.service_name);
+        output.push('\n');
+        output.push_str("Wants=network-online.target\n");
+        output.push_str("Requires=");
+        output.push_str(&warp_proxy.service_name);
+        output.push_str("\n\n");
+    } else {
+        output.push_str("After=network-online.target\n");
+        output.push_str("Wants=network-online.target\n\n");
+    }
+
     output.push_str("[Service]\n");
     output.push_str("Type=simple\n");
     output.push_str("User=root\n");
@@ -76,6 +139,16 @@ pub(super) fn render_pocketbase_systemd_unit(pocketbase: &ResolvedPocketBase) ->
         output.push_str("EnvironmentFile=");
         output.push_str(environment_file);
         output.push('\n');
+    }
+
+    if let Some(warp_proxy) = &pocketbase.warp_proxy {
+        output.push_str("Environment=");
+        output.push_str(&systemd_environment_value(
+            "HTTPS_PROXY",
+            &warp_proxy_url(warp_proxy.port),
+        ));
+        output.push('\n');
+        output.push_str("Environment=\"NO_PROXY=127.0.0.1,localhost,::1\"\n");
     }
 
     output.push_str("ExecStart=");
@@ -110,6 +183,10 @@ fn remote_child(parent: &str, child: &str) -> String {
         parent.trim_end_matches('/'),
         child.trim_start_matches('/'),
     )
+}
+
+fn warp_proxy_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}")
 }
 
 fn entrypoint_argument(entrypoint: &str) -> String {

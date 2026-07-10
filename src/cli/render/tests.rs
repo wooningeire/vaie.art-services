@@ -110,6 +110,9 @@ port = 8090
 environment_file = "/etc/vaieart/pocketbase.env"
 encryption_env = "PB_ENCRYPTION_KEY"
 
+[pocketbase.warp_proxy]
+port = 40000
+
 [[services]]
 name = "pudle"
 kind = "static_site"
@@ -129,22 +132,72 @@ route_path = "/pudle"
     assert!(artifacts.caddyfile.contains("pb.vaie.art {"));
     assert!(artifacts.caddyfile.contains("max_size 25MB"));
     assert!(artifacts.caddyfile.contains("reverse_proxy 127.0.0.1:8090"));
-    assert_eq!(artifacts.systemd_units.len(), 1);
+    assert_eq!(artifacts.systemd_units.len(), 2);
+    let pocketbase_unit = artifacts
+        .systemd_units
+        .iter()
+        .find(|unit| unit.name == "vaieart-site-pocketbase.service")
+        .expect("PocketBase unit");
+    let warp_proxy_unit = artifacts
+        .systemd_units
+        .iter()
+        .find(|unit| unit.name == "vaieart-site-pocketbase-warp-proxy.service")
+        .expect("WARP proxy unit");
+
     assert_eq!(
-        artifacts.systemd_units[0].name,
-        "vaieart-site-pocketbase.service",
+        warp_proxy_unit.content,
+        r#"[Unit]
+Description=vaie.art managed WARP proxy for PocketBase - site-pocketbase
+After=network-online.target warp-svc.service
+Wants=network-online.target
+Requires=warp-svc.service
+Before=vaieart-site-pocketbase.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/warp-cli tunnel protocol set MASQUE
+ExecStart=/usr/bin/warp-cli mode proxy
+ExecStart=/usr/bin/warp-cli proxy port 40000
+ExecStart=/usr/bin/warp-cli connect
+ExecStart=/usr/bin/curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 1 --retry-max-time 60 --connect-timeout 3 --max-time 8 --proxy http://127.0.0.1:40000 https://discord.com/api/v10/gateway
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
+"#,
     );
     assert!(
-        artifacts.systemd_units[0]
+        pocketbase_unit
+            .content
+            .contains("After=network-online.target vaieart-site-pocketbase-warp-proxy.service")
+    );
+    assert!(
+        pocketbase_unit
+            .content
+            .contains("Requires=vaieart-site-pocketbase-warp-proxy.service")
+    );
+    assert!(
+        pocketbase_unit
             .content
             .contains("WorkingDirectory=/srv/vaieart-pocketbase")
     );
     assert!(
-        artifacts.systemd_units[0]
+        pocketbase_unit
             .content
             .contains("EnvironmentFile=/etc/vaieart/pocketbase.env")
     );
-    assert!(artifacts.systemd_units[0].content.contains(
+    assert!(
+        pocketbase_unit
+            .content
+            .contains("Environment=\"HTTPS_PROXY=http://127.0.0.1:40000\"")
+    );
+    assert!(
+        pocketbase_unit
+            .content
+            .contains("Environment=\"NO_PROXY=127.0.0.1,localhost,::1\"")
+    );
+    assert!(pocketbase_unit.content.contains(
             "ExecStart=/usr/local/bin/pocketbase serve --http=127.0.0.1:8090 --dir=/var/lib/vaieart-pocketbase/pb_data --migrationsDir=/srv/vaieart-pocketbase/pb_migrations --encryptionEnv=PB_ENCRYPTION_KEY",
         ));
 }

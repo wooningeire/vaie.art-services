@@ -1,4 +1,6 @@
-use super::super::config::{ResolvedPocketBase, ResolvedService, ResolvedServiceKind, ServiceMap};
+use super::super::config::{
+    ResolvedPocketBase, ResolvedService, ResolvedServiceKind, ResolvedWarpProxy, ServiceMap,
+};
 use super::remote::{remote_child, sh_quote};
 
 pub(super) fn install_script(map: &ServiceMap) -> String {
@@ -73,6 +75,10 @@ pub(super) fn install_script(map: &ServiceMap) -> String {
     }
 
     if let Some(pocketbase) = &map.pocketbase {
+        if let Some(warp_proxy) = &pocketbase.warp_proxy {
+            append_systemd_unit_install(&mut script, &warp_proxy.service_name);
+        }
+
         append_systemd_unit_install(&mut script, &pocketbase.service_name);
     }
     script.push_str("for unit_path in \"$systemd_dir\"/\"$managed_prefix\"*.service; do\n");
@@ -125,6 +131,10 @@ pub(super) fn append_pocketbase_preflight(script: &mut String, pocketbase: &Reso
     script.push_str("    exit 1\n");
     script.push_str("fi\n");
 
+    if let Some(warp_proxy) = &pocketbase.warp_proxy {
+        append_warp_proxy_preflight(script, warp_proxy);
+    }
+
     if let Some(environment_file) = &pocketbase.environment_file {
         script.push_str("if [ ! -f ");
         script.push_str(&sh_quote(environment_file));
@@ -161,7 +171,78 @@ pub(super) fn append_pocketbase_preflight(script: &mut String, pocketbase: &Reso
             script.push_str("    exit 1\n");
             script.push_str("fi\n");
         }
+
+        if pocketbase.warp_proxy.is_some() {
+            script.push_str("if grep -Eq ");
+            script.push_str(&sh_quote(
+                "^[[:space:]]*(HTTP_PROXY|http_proxy|HTTPS_PROXY|https_proxy|NO_PROXY|no_proxy|ALL_PROXY|all_proxy)[[:space:]]*=",
+            ));
+            script.push(' ');
+            script.push_str(&sh_quote(environment_file));
+            script.push_str("; then\n");
+            script.push_str("    echo ");
+            script.push_str(&sh_quote(
+                "PocketBase environment file must not define proxy variables when warp_proxy is enabled",
+            ));
+            script.push_str(" >&2\n");
+            script.push_str("    exit 1\n");
+            script.push_str("fi\n");
+        }
     }
+}
+
+fn append_warp_proxy_preflight(script: &mut String, warp_proxy: &ResolvedWarpProxy) {
+    script.push_str("if [ ! -x ");
+    script.push_str(&sh_quote(&warp_proxy.cli));
+    script.push_str(" ]; then\n");
+    script.push_str("    echo ");
+    script.push_str(&sh_quote(&format!("missing WARP CLI: {}", warp_proxy.cli)));
+    script.push_str(" >&2\n");
+    script.push_str("    echo ");
+    script.push_str(&sh_quote(
+        "install cloudflare-warp on the remote or update pocketbase.warp_proxy.cli",
+    ));
+    script.push_str(" >&2\n");
+    script.push_str("    exit 1\n");
+    script.push_str("fi\n");
+    script.push_str("if ! systemctl cat ");
+    script.push_str(&sh_quote(&warp_proxy.daemon_service));
+    script.push_str(" >/dev/null 2>&1; then\n");
+    script.push_str("    echo ");
+    script.push_str(&sh_quote(&format!(
+        "missing WARP systemd service: {}",
+        warp_proxy.daemon_service,
+    )));
+    script.push_str(" >&2\n");
+    script.push_str("    exit 1\n");
+    script.push_str("fi\n");
+    script.push_str("if ! systemctl start ");
+    script.push_str(&sh_quote(&warp_proxy.daemon_service));
+    script.push_str("; then\n");
+    script.push_str("    echo ");
+    script.push_str(&sh_quote(&format!(
+        "failed to start WARP daemon: {}",
+        warp_proxy.daemon_service,
+    )));
+    script.push_str(" >&2\n");
+    script.push_str("    exit 1\n");
+    script.push_str("fi\n");
+    script.push_str("if ! ");
+    script.push_str(&sh_quote(&warp_proxy.cli));
+    script.push_str(" registration show >/dev/null 2>&1; then\n");
+    script.push_str("    echo 'WARP consumer registration is missing' >&2\n");
+    script.push_str("    echo ");
+    script.push_str(&sh_quote(&format!(
+        "run once on the remote: {} registration new",
+        warp_proxy.cli,
+    )));
+    script.push_str(" >&2\n");
+    script.push_str("    exit 1\n");
+    script.push_str("fi\n");
+    script.push_str("if [ ! -x /usr/bin/curl ]; then\n");
+    script.push_str("    echo 'missing curl binary: /usr/bin/curl' >&2\n");
+    script.push_str("    exit 1\n");
+    script.push_str("fi\n");
 }
 
 fn append_systemd_unit_install(script: &mut String, service_name: &str) {

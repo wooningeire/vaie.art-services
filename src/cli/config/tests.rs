@@ -45,6 +45,8 @@ port = 8090
 environment_file = "/etc/vaieart/pocketbase.env"
 encryption_env = "PB_ENCRYPTION_KEY"
 
+[pocketbase.warp_proxy]
+
 [[services]]
 name = "pudle"
 kind = "static_site"
@@ -58,9 +60,58 @@ route_path = "/pudle"
     assert_eq!(pocketbase.host, "pb.vaie.art");
     assert_eq!(pocketbase.port, 8090);
     assert_eq!(pocketbase.service_name, "vaieart-site-pocketbase.service");
+    let warp_proxy = pocketbase.warp_proxy.as_ref().expect("WARP proxy config");
+    assert_eq!(warp_proxy.port, 40000);
+    assert_eq!(warp_proxy.cli, "/usr/bin/warp-cli");
+    assert_eq!(warp_proxy.daemon_service, "warp-svc.service");
+    assert_eq!(
+        warp_proxy.service_name,
+        "vaieart-site-pocketbase-warp-proxy.service",
+    );
     assert_eq!(
         map.systemd_service_names(),
-        vec!["vaieart-site-pocketbase.service"],
+        vec![
+            "vaieart-site-pocketbase-warp-proxy.service",
+            "vaieart-site-pocketbase.service",
+        ],
+    );
+}
+
+#[test]
+fn pocketbase_warp_proxy_rejects_zero_port() {
+    let fixture = ConfigFixture::new();
+    let error = fixture.load_error(
+        r#"
+manifest_version = 1
+
+[remote]
+
+[caddy]
+primary_host = "vaie.art"
+
+[pocketbase]
+name = "site-pocketbase"
+host = "pb.vaie.art"
+source_path = "src/pocketbase"
+remote_path = "/srv/vaieart-pocketbase"
+data_dir = "/var/lib/vaieart-pocketbase/pb_data"
+
+[pocketbase.warp_proxy]
+port = 0
+
+[[services]]
+name = "pudle"
+kind = "static_site"
+local_path = "src/submodules/pudle"
+remote_path = "/web/pudle"
+route_path = "/pudle"
+"#,
+    );
+
+    assert!(
+        error
+            .to_string()
+            .contains("pocketbase.warp_proxy.port must be greater than 0"),
     );
 }
 

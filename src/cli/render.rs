@@ -11,7 +11,9 @@ mod systemd;
 mod tests;
 
 use caddy::render_caddyfile;
-use systemd::{render_pocketbase_systemd_unit, render_systemd_unit};
+use systemd::{
+    render_pocketbase_systemd_unit, render_systemd_unit, render_warp_proxy_systemd_unit,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RenderedArtifacts {
@@ -38,6 +40,10 @@ pub fn render_artifacts(map: &ServiceMap) -> RenderedArtifacts {
         .collect::<Vec<_>>();
 
     if let Some(pocketbase) = &map.pocketbase {
+        if let Some(warp_proxy) = &pocketbase.warp_proxy {
+            systemd_units.push(render_warp_proxy_systemd_unit(pocketbase, warp_proxy));
+        }
+
         systemd_units.push(render_pocketbase_systemd_unit(pocketbase));
     }
 

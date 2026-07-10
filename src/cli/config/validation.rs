@@ -224,6 +224,20 @@ fn resolve_pocketbase(
         );
     }
 
+    let warp_proxy = pocketbase
+        .warp_proxy
+        .map(|warp_proxy| {
+            resolve_warp_proxy(
+                warp_proxy,
+                &pocketbase.name,
+                &service_name,
+                managed_prefix,
+                ports,
+                systemd_units,
+            )
+        })
+        .transpose()?;
+
     Ok(ResolvedPocketBase {
         name: pocketbase.name,
         host: pocketbase.host,
@@ -238,6 +252,58 @@ fn resolve_pocketbase(
         request_body_max_size: pocketbase.request_body_max_size,
         read_timeout: pocketbase.read_timeout,
         encryption_env: pocketbase.encryption_env,
+        warp_proxy,
+    })
+}
+
+fn resolve_warp_proxy(
+    warp_proxy: WarpProxyConfig,
+    pocketbase_name: &str,
+    pocketbase_service_name: &str,
+    managed_prefix: &str,
+    ports: &mut BTreeSet<u16>,
+    systemd_units: &mut BTreeSet<String>,
+) -> Result<ResolvedWarpProxy> {
+    if warp_proxy.port == 0 {
+        bail!("pocketbase.warp_proxy.port must be greater than 0");
+    }
+
+    if !ports.insert(warp_proxy.port) {
+        bail!("duplicate service/proxy port `{}`", warp_proxy.port);
+    }
+
+    validate_remote_path("pocketbase.warp_proxy.cli", &warp_proxy.cli)?;
+    validate_token("pocketbase.warp_proxy.cli", &warp_proxy.cli)?;
+    validate_dependency_systemd_service_name(
+        "pocketbase.warp_proxy.daemon_service",
+        &warp_proxy.daemon_service,
+    )?;
+
+    if warp_proxy.daemon_service.starts_with(managed_prefix)
+        || warp_proxy.daemon_service == pocketbase_service_name
+    {
+        bail!(
+            "pocketbase.warp_proxy.daemon_service must name an external, unmanaged systemd service",
+        );
+    }
+
+    let service_name =
+        generated_service_name(managed_prefix, &format!("{pocketbase_name}-warp-proxy"));
+    validate_systemd_service_name(pocketbase_name, managed_prefix, &service_name)?;
+
+    if service_name == pocketbase_service_name || service_name == warp_proxy.daemon_service {
+        bail!("PocketBase WARP proxy systemd service name must be unique");
+    }
+
+    if !systemd_units.insert(service_name.clone()) {
+        bail!("duplicate systemd service `{service_name}`");
+    }
+
+    Ok(ResolvedWarpProxy {
+        port: warp_proxy.port,
+        cli: warp_proxy.cli,
+        daemon_service: warp_proxy.daemon_service,
+        service_name,
     })
 }
 
@@ -420,6 +486,19 @@ fn validate_systemd_service_name(
 
     if !valid {
         bail!("systemd service name `{systemd_name}` contains invalid characters");
+    }
+
+    Ok(())
+}
+
+fn validate_dependency_systemd_service_name(label: &str, systemd_name: &str) -> Result<()> {
+    let valid = systemd_name.ends_with(".service")
+        && systemd_name
+            .chars()
+            .all(|char| char.is_ascii_alphanumeric() || matches!(char, '.' | '_' | '-' | '@'));
+
+    if !valid {
+        bail!("{label} `{systemd_name}` is not a valid systemd service name");
     }
 
     Ok(())

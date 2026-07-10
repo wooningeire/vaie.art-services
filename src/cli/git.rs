@@ -235,6 +235,7 @@ mod tests {
             request_body_max_size: "25MB".to_string(),
             read_timeout: "360s".to_string(),
             encryption_env: None,
+            warp_proxy: None,
         }
     }
     struct RecordingRunner {

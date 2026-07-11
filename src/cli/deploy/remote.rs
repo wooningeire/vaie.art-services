@@ -43,6 +43,30 @@ pub(super) fn pocketbase_rsync_command(
         .arg(rsync_source(&pocketbase.source_path, true))
         .arg(format!("{remote_target}:{remote_destination}"))
 }
+
+pub(super) fn pocketbase_migrations_pull_rsync_command(
+    remote: &RemoteConfig,
+    remote_target: &str,
+    remote_source: &str,
+    local_destination: &Path,
+) -> ProcessCommand {
+    ProcessCommand::new(remote.rsync_program.as_str())
+        .arg("-rtz")
+        .arg("--ignore-existing")
+        .arg("--itemize-changes")
+        .arg("--include")
+        .arg("*.js")
+        .arg("--exclude")
+        .arg("*")
+        .arg("-e")
+        .arg(ssh_transport(remote))
+        .arg(format!(
+            "{remote_target}:{}/",
+            remote_source.trim_end_matches('/'),
+        ))
+        .arg(rsync_source(local_destination, true))
+}
+
 pub(super) fn ssh_command(
     remote: &RemoteConfig,
     remote_target: &str,

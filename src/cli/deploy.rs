@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::config::{ResolvedService, ServiceMap};
 use super::process::{
@@ -16,13 +17,62 @@ mod tests;
 
 use install_script::{append_pocketbase_preflight, install_script};
 use remote::{
-    pocketbase_rsync_command, remote_child, remote_rsync_target, remote_ssh_target, rsync_command,
-    sh_quote, ssh_command,
+    pocketbase_migrations_pull_rsync_command, pocketbase_rsync_command, remote_child,
+    remote_rsync_target, remote_ssh_target, rsync_command, sh_quote, ssh_command,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeploymentCommandList {
     pub commands: Vec<ProcessCommand>,
+}
+
+pub(super) fn pull_pocketbase_migrations(
+    map: &ServiceMap,
+    runner: &dyn CommandRunner,
+) -> Result<PathBuf> {
+    let pocketbase = map
+        .pocketbase
+        .as_ref()
+        .context("pull-pb-migrations requires a [pocketbase] configuration")?;
+
+    if !pocketbase.source_path.is_dir() {
+        bail!(
+            "PocketBase source path `{}` is not an initialized directory",
+            pocketbase.source_path.display(),
+        );
+    }
+
+    ensure_program_available(&map.remote.ssh_program)?;
+    ensure_program_available(&map.remote.rsync_program)?;
+
+    let destination = pocketbase.source_path.join("pb_migrations");
+    fs::create_dir_all(&destination).with_context(|| {
+        format!(
+            "failed to create PocketBase migrations directory `{}`",
+            destination.display(),
+        )
+    })?;
+    let command = build_pocketbase_migrations_pull_command(map)?;
+    runner.run(&command)?;
+
+    Ok(destination)
+}
+
+fn build_pocketbase_migrations_pull_command(map: &ServiceMap) -> Result<ProcessCommand> {
+    let pocketbase = map
+        .pocketbase
+        .as_ref()
+        .context("pull-pb-migrations requires a [pocketbase] configuration")?;
+    let remote_target = remote_rsync_target(&map.remote)?;
+    let remote_source = remote_child(&pocketbase.remote_path, "pb_migrations");
+    let local_destination = pocketbase.source_path.join("pb_migrations");
+
+    Ok(pocketbase_migrations_pull_rsync_command(
+        &map.remote,
+        &remote_target,
+        &remote_source,
+        &local_destination,
+    ))
 }
 
 pub fn deploy(map: &ServiceMap, output_dir: &Path, runner: &dyn CommandRunner) -> Result<()> {
@@ -134,6 +184,15 @@ pub fn build_deployment_command_list(
         &remote_child(&map.remote.tmp_dir, "systemd"),
         true,
         true,
+    ));
+    let remote_systemd_dir = remote_child(&map.remote.tmp_dir, "systemd");
+    commands.push(ssh_command(
+        &map.remote,
+        &ssh_target,
+        &format!(
+            "set -- {}/*.service\nif [ -e \"$1\" ]; then systemd-analyze verify \"$@\"; fi",
+            sh_quote(&remote_systemd_dir),
+        ),
     ));
     commands.push(ssh_command(
         &map.remote,

@@ -108,6 +108,43 @@ fn deploy_plan_validates_caddy_before_remote_install_script() {
 }
 
 #[test]
+fn deploy_plan_validates_systemd_after_sync_and_before_install() {
+    let fixture = DeployFixture::new();
+    let map = fixture.map();
+    let plan =
+        build_deployment_command_list_for_output_dir(&map, &fixture.dir.path().join("rendered"))
+            .expect("deployment plan");
+    let displays = plan
+        .commands
+        .iter()
+        .map(ProcessCommand::display)
+        .collect::<Vec<_>>();
+
+    let systemd_rsync_index = plan
+        .commands
+        .iter()
+        .position(|command| {
+            command.program == "rsync"
+                && command
+                    .args
+                    .last()
+                    .is_some_and(|arg| arg.ends_with("/systemd"))
+        })
+        .expect("systemd rsync command");
+    let verify_index = displays
+        .iter()
+        .position(|command| command.contains("systemd-analyze verify"))
+        .expect("systemd verify command");
+    let install_index = displays
+        .iter()
+        .position(|command| command.contains("systemctl daemon-reload"))
+        .expect("remote install script");
+
+    assert!(systemd_rsync_index < verify_index);
+    assert!(verify_index < install_index);
+}
+
+#[test]
 fn deployment_plan_requires_remote_host() {
     let fixture = DeployFixture::new_without_remote_host();
     let map = fixture.map();

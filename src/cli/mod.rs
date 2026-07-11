@@ -7,7 +7,10 @@ pub mod config;
 use config::Config;
 
 pub mod deploy;
-use deploy::{build_deployment_command_list_for_output_dir, deploy, deploy_rendered, format_plan};
+use deploy::{
+    build_deployment_command_list_for_output_dir, deploy, deploy_rendered, format_plan,
+    pull_pocketbase_migrations,
+};
 
 pub mod git;
 use git::update_repositories;
@@ -34,6 +37,7 @@ pub struct Cli {
 enum Commands {
     Check,
     Update,
+    PullPbMigrations,
     Render,
     Plan,
     Deploy,
@@ -77,6 +81,14 @@ fn route_cli_subcommand(cli: Cli, runner: &dyn CommandRunner) -> Result<String> 
         Some(Commands::Update) => {
             update_repositories(&map, runner)?;
             Ok("Repositories updated\n".to_string())
+        }
+
+        Some(Commands::PullPbMigrations) => {
+            let destination = pull_pocketbase_migrations(&map, runner)?;
+            Ok(format!(
+                "Pulled new PocketBase migrations into {}\nExisting local migrations were not overwritten; review, commit, and push the new files before publishing.\n",
+                destination.display(),
+            ))
         }
 
         Some(Commands::Render) => {
@@ -200,6 +212,32 @@ mod tests {
         assert!(output.contains("deno task build"));
         assert!(output.contains("rsync"));
         assert!(output.contains("caddy validate"));
+    }
+
+    #[test]
+    fn pull_pb_migrations_routes_one_safe_rsync_into_the_configured_source() {
+        let fixture = CliFixture::with_config(pull_pb_migrations_config());
+        let pocketbase_source = fixture.dir.path().join("src/submodules/pb.vaie.art");
+        fs::create_dir_all(&pocketbase_source).expect("pocketbase source");
+        let expected_destination = pocketbase_source
+            .canonicalize()
+            .expect("canonical PocketBase source")
+            .join("pb_migrations");
+
+        let output = fixture.run(["bin", "--config", fixture.config(), "pull-pb-migrations"]);
+        let displays = fixture.runner.displays();
+
+        assert_eq!(displays.len(), 1);
+        assert!(displays[0].contains("--ignore-existing"));
+        assert!(displays[0].contains("--itemize-changes"));
+        assert!(!displays[0].contains("--delete"));
+        assert!(displays[0].contains("root@vaie.art:/srv/vaieart-pocketbase/pb_migrations/",));
+        assert!(
+            pocketbase_source.join("pb_migrations").is_dir(),
+            "the command should create the migration directory inside the configured source",
+        );
+        assert!(output.contains(&expected_destination.display().to_string()));
+        assert!(output.contains("were not overwritten"));
     }
 
     struct CliFixture {
@@ -333,6 +371,36 @@ route_path = "/pudle"
 
 [services.build]
 command = ["deno", "task", "build"]
+"#
+    }
+
+    fn pull_pb_migrations_config() -> &'static str {
+        r#"
+manifest_version = 1
+
+[remote]
+host = "vaie.art"
+user = "root"
+ssh_program = "cargo"
+rsync_program = "cargo"
+
+[caddy]
+primary_host = "vaie.art"
+
+[pocketbase]
+name = "pb"
+host = "pb.vaie.art"
+source_path = "src/submodules/pb.vaie.art"
+remote_path = "/srv/vaieart-pocketbase"
+data_dir = "/var/lib/vaieart-pocketbase/pb_data"
+
+[[services]]
+name = "pudle"
+kind = "static_site"
+local_path = "src/submodules/pudle"
+remote_path = "/web/pudle"
+sync_source = "build"
+route_path = "/pudle"
 "#
     }
 }
